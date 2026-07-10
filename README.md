@@ -60,6 +60,19 @@ armory --help
 
 **Current focus:** Fable as advisor + `armory grok-xhigh`. Legacy cheap dispatch is disabled; grok-xhigh is the ready heavy loadout.
 
+## Skills
+
+The armory ships an optional Claude Code **skill**.
+
+### `fusion-advisor` — two-model advisor fusion
+
+When a *decision* is high-leverage (a design fork, a risky change, a `/loop` course-correction), a single frontier model can be confidently wrong. `fusion-advisor` turns your advisor session (Claude Code / Opus) into a **two-model advisor**: it consults a second, different-vendor frontier model (Grok, via the `armory` launcher) as a context-isolated peer, reconciles the two positions by **verifying — not voting**, then delegates execution down to the armory's executor loadouts.
+
+It is built on the research reality that naive multi-model mixing often *hurts* (quality dilution, echo-chamber convergence, self-preference bias) — so the skill is mostly **guardrails** that make fusion pay off only where it should. Manual-invoke only; reserved for high-leverage calls (it costs 2–10× tokens).
+
+- Skill file: [`skills/fusion-advisor/SKILL.md`](skills/fusion-advisor/SKILL.md)
+- Install: `ln -sfn "$PWD/skills/fusion-advisor" ~/.claude/skills/fusion-advisor`
+
 ## Executor contract
 
 Every loadout pulled from the armory carries strong discipline:
