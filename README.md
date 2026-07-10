@@ -2,7 +2,7 @@
   <picture>
     <source srcset="assets/armory-banner.avif" type="image/avif">
     <source srcset="assets/armory-banner.webp" type="image/webp">
-    <img src="assets/armory-banner.webp" width="1600" height="533" alt="llm-armory — choose the right executor for the job">
+    <img src="assets/armory-banner.webp" width="1600" alt="llm-armory — choose the right executor for the job">
   </picture>
 </p>
 
