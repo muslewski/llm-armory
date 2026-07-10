@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${LLM_ARMORY_HOME:-${LLM_LAB_HOME:-$HOME/Repositories/llm-armory}}/hooks/post-edit-check.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${LLM_ARMORY_HOME:-${LLM_LAB_HOME:-$HOME/Repositories/llm-armory}}/hooks/stop-gate.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

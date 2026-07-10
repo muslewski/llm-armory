@@ -1,0 +1,11 @@
+# real provider credentials — never committed
+presets/providers/*.env
+!presets/providers/*.env.example
+# freellmapi upstream clone + its runtime config
+freellmapi/src/
+freellmapi/.env
+# bake-off raw logs (summaries are committed)
+bakeoff/results/*.log
+# local-only planning docs (advisor plans/specs — kept out of the public repo)
+docs/superpowers/plans/
+docs/superpowers/specs/

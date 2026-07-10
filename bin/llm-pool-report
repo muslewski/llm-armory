@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# llm-pool-report [hours] — attribute freellmapi pool activity.
+#
+# Child transcripts only record the requested model ("auto" or a pinned id);
+# the router DB knows which provider+model actually answered each request.
+# Run this after any `llm free` batch to attribute failures (2026-07-06
+# postmortem lesson: without it, per-model blame is guesswork).
+set -euo pipefail
+
+HOURS="${1:-6}"
+CONTAINER="${FREELLMAPI_CONTAINER:-src-freellmapi-1}"
+
+TMP=$(mktemp /tmp/llm-pool-report.XXXXXX.js)
+trap 'rm -f "$TMP"' EXIT
+
+cat > "$TMP" <<'EOF'
+const Database = require("better-sqlite3");
+const db = new Database("/app/server/data/freeapi.db", { readonly: true });
+const h = Number(process.env.HOURS || 6);
+const since = `-${h} hours`;
+console.log(`— served models (last ${h}h) —`);
+console.table(db.prepare(`
+  SELECT platform, model_id, requested_model,
+         SUM(status='success') ok, SUM(status='error') err,
+         ROUND(AVG(output_tokens)) avg_out, ROUND(AVG(latency_ms)/1000.0,1) avg_s
+  FROM requests WHERE created_at > datetime('now', ?)
+  GROUP BY platform, model_id, requested_model
+  ORDER BY ok + err DESC LIMIT 30`).all(since));
+console.log("— top errors —");
+console.table(db.prepare(`
+  SELECT substr(error, 1, 110) error, COUNT(*) n
+  FROM requests WHERE created_at > datetime('now', ?) AND error IS NOT NULL
+  GROUP BY substr(error, 1, 110) ORDER BY n DESC LIMIT 12`).all(since));
+const t = db.prepare(`
+  SELECT COUNT(*) reqs, SUM(status='error') errs, COUNT(DISTINCT model_id) models
+  FROM requests WHERE created_at > datetime('now', ?)`).get(since);
+console.log(`total: ${t.reqs} requests, ${t.errs} errors, ${t.models} distinct models served`);
+EOF
+
+docker cp "$TMP" "$CONTAINER":/tmp/llm-pool-report.js >/dev/null
+docker exec -e NODE_PATH=/app/node_modules -e HOURS="$HOURS" "$CONTAINER" node /tmp/llm-pool-report.js

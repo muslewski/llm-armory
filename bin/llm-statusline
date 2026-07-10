@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# llm-statusline — emit "⚡ <lane>" for the Claude Code statusline (llm-armory).
+# Reads statusline JSON on stdin; falls back to env when fields are absent.
+set -euo pipefail
+input=$(cat)
+model=$(printf '%s' "$input" | grep -o '"display_name"[^,}]*' | head -1 | sed 's/.*:\s*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' || true)
+preset="${LLM_PRESET:-max}"
+if [[ "${LLM_GROK:-0}" == "1" || "$preset" == grok* ]]; then
+  echo "⚡ ${preset}:grok-xhigh"
+else
+  echo "⚡ ${preset}:${model:-${ANTHROPIC_MODEL:-fable}}"
+fi
