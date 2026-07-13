@@ -250,6 +250,17 @@ case "${1:-}" in
     check_auth
     preflight
 
+    # SAGE fleet provenance (agentic-sage plan 024 companion): stamp parent
+    # session id so nested armory children classify as managed_by=nested.
+    # Prefer an explicit SAGE_PARENT; else inherit the advisor session's id.
+    if [[ -z "${SAGE_PARENT:-}" ]]; then
+      if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
+        export SAGE_PARENT="$CLAUDE_SESSION_ID"
+      elif [[ -n "${GROK_SESSION_ID:-}" ]]; then
+        export SAGE_PARENT="$GROK_SESSION_ID"
+      fi
+    fi
+
     if [[ "${LLM_GROK:-0}" == "1" || "$preset" == grok* ]]; then
       launch_grok "$@"
     else
