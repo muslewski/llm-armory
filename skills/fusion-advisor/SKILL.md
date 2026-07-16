@@ -56,16 +56,16 @@ self-triggers.
 Advisor consult (verified flags):
 
 ```bash
-grok -p "REASON ONLY — do not run commands, edit files, or execute anything; return your analysis as text. <brief + the question>" --effort xhigh --always-approve
+grok -p "REASON ONLY — do not run commands, edit files, or execute anything; return your analysis as text. <brief + the question>" --model grok-4.5 --effort high --always-approve
 # long consult → run in background, then poll the output file:
 #   run_in_background: true, then Read the task output; heartbeat like armory monitoring.
 ```
 
-- `--effort xhigh` (alias of `--reasoning-effort`) → maximum reasoning.
+- `--model grok-4.5 --effort high` → Grok 4.5 max supported effort (high|medium|low only; no xhigh).
 - `--always-approve` → headless, no tool-approval prompt hang.
 - Web/X search is ON by default; add `--disable-web-search` only to force offline reasoning.
 - **NEVER** attach the executor `--rules` contract here. `grok -p` (bare) = advisor consult.
-  `armory grok-xhigh` (with the executor contract) = execution child. They are different jobs.
+  `armory grok-high` (with the executor contract) = execution child. They are different jobs.
 - ⚠️ **`--always-approve` runs headless in your CURRENT directory and lets Grok execute tools.**
   A pure advisor consult must open with "REASON ONLY — do not run commands or edit files" (as
   above), or be launched from a neutral/scratch cwd. An action-ambiguous brief (e.g. just
@@ -78,7 +78,7 @@ executors:
 
 1. The advisor drafts the artifact.
 2. `grok -p "REASON ONLY — do not run commands or edit files; return your critique as text. <draft>. Try to break this: where does it fail — gaps, races, wrong
-   assumptions, missed cases? Assume it is broken until proven otherwise." --effort xhigh --always-approve`
+   assumptions, missed cases? Assume it is broken until proven otherwise." --model grok-4.5 --effort high --always-approve`
 3. Revise against Grok's attack (verify each claim first — reviewers are sometimes wrong).
 4. Optional single Grok re-check.
 
@@ -101,12 +101,12 @@ Each is a research-backed failure mode of naive multi-model fusion. Non-negotiab
 - **Self-preference guard** — the aggregator (you) VERIFIES claims against reality and
   steelmans dissent. Agreement between the two models is NOT evidence of correctness, and a
   model favors its own output — so never "let one model pick the winner."
-- **Capability floor** — both peers must be frontier (Opus + Grok xhigh). A weak model is an
+- **Capability floor** — both peers must be frontier (Opus + Grok 4.5 high). A weak model is an
   *executor*, never an advisor peer; a weak voice drags the group below solo performance.
 - **Complementarity focus** — spend the reconcile budget where the two DISAGREE. That is where
   a different vendor's blind spots surface. Redundant agreement buys little.
 - **Cost gate** — fuse only at high-leverage points (see When to use). Cost is 2–10×.
-- **Transport distinction** — `grok -p` = advisor consult; `armory grok-xhigh` = execution
+- **Transport distinction** — `grok -p` = advisor consult; `armory grok-high` = execution
   child. Never cross them.
 
 ## Reconcile discipline
@@ -121,7 +121,7 @@ Each is a research-backed failure mode of naive multi-model fusion. Non-negotiab
 
 - **The `armory` launcher (`bin/llm` / `armory`)** — the execution layer BELOW this skill.
   Fusion produces the plan/decision; hand ALL implementation dispatch to armory executor
-  children (`armory grok-xhigh …`). Fusion never writes production code itself.
+  children (`armory grok-high …`). Fusion never writes production code itself.
 - **`/loop` (ralph-loop plugin)** — inside an autonomous program of work, invoke fusion
   manually at per-iteration course-corrections ("what next / is this right / stop?").
 - **Optional companion patterns** (swap in your own equivalents):
@@ -151,7 +151,7 @@ Each is a research-backed failure mode of naive multi-model fusion. Non-negotiab
 | Treating agreement as proof | Agreement ≠ correctness; mine the disagreement |
 | Letting one model pick the "winner" | Aggregator verifies vs reality; steelman dissent |
 | N-round debate to force consensus | Independent-then-reconcile, capped rounds |
-| Attaching executor `--rules` to an advisor consult | Bare `grok -p` for advice; `armory grok-xhigh` for execution |
+| Attaching executor `--rules` to an advisor consult | Bare `grok -p` for advice; `armory grok-high` for execution |
 | Fusion writing the production code | Delegate implementation to `armory` executor children |
 | Averaging in a low-quality Grok answer | Discard it, proceed solo, note it |
 | Silent solo fallback when Grok fails | State "fusion unavailable — solo advisory" |

@@ -9,3 +9,6 @@ bakeoff/results/*.log
 # local-only planning docs (advisor plans/specs — kept out of the public repo)
 docs/superpowers/plans/
 docs/superpowers/specs/
+
+# nested linked worktrees (agent executors)
+.claude/worktrees/

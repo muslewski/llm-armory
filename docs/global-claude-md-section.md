@@ -5,7 +5,7 @@ arm themselves with specialist executor lanes.
 
 Home: `~/Repositories/llm-armory` (the llm-armory).
 
-**Current primary lane:** `armory grok-xhigh` — delegate heavy execution to SuperGrok Heavy (xhigh) from Fable sessions.
+**Current primary lane:** `armory grok-high` — Grok 4.5 at effort high (Grok 4.5 supports high|medium|low only; no xhigh).
 
 Legacy free/balanced dispatch rules are disabled. This doc is retained for historical notes.
 
