@@ -7,7 +7,36 @@
 # postmortem lesson: without it, per-model blame is guesswork).
 set -euo pipefail
 
+# kit load (chrome on stderr if ever used; report data stays on stdout)
+_ARMORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/ui.sh
+source "$_ARMORY_ROOT/lib/ui.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+llm-pool-report — freellmapi pool attribution
+
+Usage:
+  llm-pool-report [hours]     report activity over the last N hours (default: 6)
+  llm-pool-report -h|--help   show this help
+
+Env:
+  FREELLMAPI_CONTAINER   docker container name (default: src-freellmapi-1)
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
 HOURS="${1:-6}"
+# Guard: non-numeric / empty → default 6 (never print NaNh)
+if ! [[ "$HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  HOURS=6
+fi
 CONTAINER="${FREELLMAPI_CONTAINER:-src-freellmapi-1}"
 
 TMP=$(mktemp /tmp/llm-pool-report.XXXXXX.js)
@@ -16,26 +45,57 @@ trap 'rm -f "$TMP"' EXIT
 cat > "$TMP" <<'EOF'
 const Database = require("better-sqlite3");
 const db = new Database("/app/server/data/freeapi.db", { readonly: true });
-const h = Number(process.env.HOURS || 6);
-const since = `-${h} hours`;
-console.log(`— served models (last ${h}h) —`);
-console.table(db.prepare(`
+const raw = process.env.HOURS;
+const h = Number(raw);
+const hours = Number.isFinite(h) && h > 0 ? h : 6;
+const since = `-${hours} hours`;
+const dash = "—";
+
+const models = db.prepare(`
   SELECT platform, model_id, requested_model,
          SUM(status='success') ok, SUM(status='error') err,
          ROUND(AVG(output_tokens)) avg_out, ROUND(AVG(latency_ms)/1000.0,1) avg_s
   FROM requests WHERE created_at > datetime('now', ?)
   GROUP BY platform, model_id, requested_model
-  ORDER BY ok + err DESC LIMIT 30`).all(since));
-console.log("— top errors —");
-console.table(db.prepare(`
+  ORDER BY ok + err DESC LIMIT 30`).all(since);
+
+console.log(`— served models (last ${hours}h) —`);
+if (!models || models.length === 0) {
+  console.log(dash);
+} else {
+  console.table(models);
+}
+
+const errors = db.prepare(`
   SELECT substr(error, 1, 110) error, COUNT(*) n
   FROM requests WHERE created_at > datetime('now', ?) AND error IS NOT NULL
-  GROUP BY substr(error, 1, 110) ORDER BY n DESC LIMIT 12`).all(since));
+  GROUP BY substr(error, 1, 110) ORDER BY n DESC LIMIT 12`).all(since);
+
+console.log("— top errors —");
+if (!errors || errors.length === 0) {
+  console.log(dash);
+} else {
+  console.table(errors);
+}
+
 const t = db.prepare(`
   SELECT COUNT(*) reqs, SUM(status='error') errs, COUNT(DISTINCT model_id) models
   FROM requests WHERE created_at > datetime('now', ?)`).get(since);
-console.log(`total: ${t.reqs} requests, ${t.errs} errors, ${t.models} distinct models served`);
+
+const reqs = t && t.reqs != null ? t.reqs : 0;
+const errs = t && t.errs != null ? t.errs : dash;
+const mods = t && t.models != null ? t.models : 0;
+console.log(`total: ${reqs} requests, ${errs} errors, ${mods} distinct models served`);
 EOF
 
-docker cp "$TMP" "$CONTAINER":/tmp/llm-pool-report.js >/dev/null
+# Soft-fail when docker/container missing: print dash report, exit 0 for offline use.
+if ! command -v docker >/dev/null 2>&1; then
+  printf '— served models (last %sh) —\n—\n— top errors —\n—\ntotal: 0 requests, — errors, 0 distinct models served\n' "$HOURS"
+  exit 0
+fi
+
+if ! docker cp "$TMP" "$CONTAINER":/tmp/llm-pool-report.js >/dev/null 2>&1; then
+  printf '— served models (last %sh) —\n—\n— top errors —\n—\ntotal: 0 requests, — errors, 0 distinct models served\n' "$HOURS"
+  exit 0
+fi
 docker exec -e NODE_PATH=/app/node_modules -e HOURS="$HOURS" "$CONTAINER" node /tmp/llm-pool-report.js

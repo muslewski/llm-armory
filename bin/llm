@@ -2,6 +2,11 @@
 # armory — llm-armory executor launcher
 # Lanes / loadouts: $LLM_ARMORY_HOME/presets/*.env  (default: ~/Repositories/llm-armory)
 # This is the implementation of llm-armory — choose the right executor for the job.
+#
+# THE ONE ABSOLUTE CONSTRAINT: `armory <loadout> -p <prompt>` is production
+# infrastructure. Exec of the child CLI, exit-code propagation, prompt passing,
+# and no-TTY operation MUST stay byte-compatible. All chrome → stderr and
+# silences when stderr is not a TTY (kit law).
 set -euo pipefail
 
 # Support both new name and legacy LLM_LAB_HOME for transition
@@ -11,6 +16,14 @@ export ARMORY_HOME
 export LLM_ARMORY_HOME="$ARMORY_HOME"  # for future
 export LLM_LAB_HOME="$ARMORY_HOME"     # compat for old hooks
 export PRESETS_DIR   # preset files use it to source providers/*.env
+
+# GREEN-UI-KIT (or plain fallbacks). Path override: GREEN_UI=/path/to/green-ui.sh
+_ARMORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/ui.sh
+source "$_ARMORY_ROOT/lib/ui.sh"
+
+# Primary loadout for ★ marking (statusline / list).
+ARMORY_PRIMARY_LOADOUT="${ARMORY_PRIMARY_LOADOUT:-grok-high}"
 
 usage() {
   local cmd="${0##*/}"
@@ -22,8 +35,10 @@ usage() {
 $cmd — llm-armory (choose the right executor for the job)
 
 Usage:
-  $cmd --list                  show loadouts in the armory
-  $cmd --dry-run <loadout>     preview what will be launched
+  $cmd --list                  arsenal rack (loadouts + READY/SKIP/DEAD)
+  $cmd --dry-run <loadout>     mission card: preview what will be launched
+  $cmd pick                    fzf/numbered pick then launch
+  $cmd doctor                  whole-armory health checklist
   $cmd <loadout> [args...]     arm and launch an executor loadout
                                (quality = native Fable advisor)
                                (grok-high = Grok 4.5 @ effort high)
@@ -78,9 +93,13 @@ sanitize_parent_loadout() {
         API_TIMEOUT_MS LLM_SYSTEM_APPEND LLM_EXECUTOR_HOOKS
 }
 
+is_grok_loadout() {
+  [[ "${LLM_GROK:-0}" == "1" || "${1:-${LLM_PRESET:-}}" == grok* ]]
+}
+
 check_auth() {
   # Grok presets use separate auth (grok login / XAI_API_KEY). Skip Anthropic checks.
-  if [[ "${LLM_GROK:-0}" == "1" || "${LLM_PRESET:-}" == grok* ]]; then
+  if is_grok_loadout; then
     return 0
   fi
 
@@ -100,9 +119,46 @@ check_auth() {
   fi
 }
 
+# Auth probe for doctor/list badges (never exits).
+auth_ok_quiet() {
+  if is_grok_loadout; then
+    # Grok: binary presence is the hard check; login cache optional.
+    return 0
+  fi
+  if [[ -n "${LLM_REQUIRES_CREDENTIAL:-}" && -z "${ANTHROPIC_BASE_URL:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    return 1
+  fi
+  if [[ -n "${ANTHROPIC_BASE_URL:-}" && -z "${ANTHROPIC_AUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# READY | SKIP | DEAD — binary present? key present?
+loadout_badge() {
+  local name=$1
+  if is_grok_loadout "$name"; then
+    if command -v grok >/dev/null 2>&1; then
+      printf 'READY'
+    else
+      printf 'DEAD'
+    fi
+    return 0
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    printf 'DEAD'
+    return 0
+  fi
+  if ! auth_ok_quiet; then
+    printf 'SKIP'
+    return 0
+  fi
+  printf 'READY'
+}
+
 preflight() {
   # Grok lane has its own preflight (binary presence + version).
-  if [[ "${LLM_GROK:-0}" == "1" || "${LLM_PRESET:-}" == grok* ]]; then
+  if is_grok_loadout; then
     return 0
   fi
 
@@ -130,22 +186,77 @@ preflight() {
   echo "✓ preflight: '$model' responding at $ANTHROPIC_BASE_URL" >&2
 }
 
-banner() {
-  local model="${ANTHROPIC_MODEL:-claude (native)}" host
-  if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
-    host="$ANTHROPIC_BASE_URL"
-  elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    host="api.anthropic.com (API-billed)"
+# Classic monoline executor identity — always on stderr (launch-path contract).
+# Kept for non-TTY / nohup logs and existing golden greps.
+emit_executor_line() {
+  if is_grok_loadout; then
+    local effort="${GROK_EFFORT:-high}"
+    local model="${GROK_MODEL:-grok-4.5}"
+    echo "▶ executor: ${model} (effort=${effort}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})" >&2
   else
-    host="api.anthropic.com (Max subscription)"
+    local model="${ANTHROPIC_MODEL:-claude (native)}" host
+    if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+      host="$ANTHROPIC_BASE_URL"
+    elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      host="api.anthropic.com (API-billed)"
+    else
+      host="api.anthropic.com (Max subscription)"
+    fi
+    echo "▶ executor: ${model} @ ${host} (loadout: ${LLM_PRESET:-?})" >&2
   fi
-  echo "▶ executor: ${model} @ ${host} (loadout: ${LLM_PRESET:-?})" >&2
 }
 
-grok_banner() {
-  local effort="${GROK_EFFORT:-high}"
-  local model="${GROK_MODEL:-grok-4.5}"
-  echo "▶ executor: ${model} (effort=${effort}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})" >&2
+# Compat aliases used historically / by dry-run paths that called banner.
+banner() { emit_executor_line; }
+grok_banner() { emit_executor_line; }
+
+# Compact arm checklist + mission banner on TTY only (kit law).
+# Non-TTY: silent — only emit_executor_line remains for logs.
+arm_sequence() {
+  local phase=${1:-launch}  # launch | dry-run (dry-run skips armed banner)
+  if ! ui_tty; then
+    return 0
+  fi
+
+  local sf bin_state auth_state
+  sf=$(mktemp 2>/dev/null) || sf="${TMPDIR:-/tmp}/armory-arm.$$.$RANDOM"
+  : >"$sf"
+
+  check_set "$sf" resolve done
+
+  if is_grok_loadout; then
+    if command -v grok >/dev/null 2>&1; then bin_state=done; else bin_state=failed; fi
+  else
+    if command -v claude >/dev/null 2>&1; then bin_state=done; else bin_state=failed; fi
+  fi
+  check_set "$sf" binary "$bin_state"
+
+  if auth_ok_quiet; then auth_state=done; else auth_state=failed; fi
+  check_set "$sf" auth "$auth_state"
+  check_set "$sf" arm done
+
+  checklist "$sf" \
+    "resolve:resolve loadout" \
+    "binary:check binary" \
+    "auth:check auth/key" \
+    "arm:arm"
+  rm -f "$sf" 2>/dev/null || true
+
+  if [[ $phase == launch ]]; then
+    local model effort host sub
+    if is_grok_loadout; then
+      model="${GROK_MODEL:-grok-4.5}"
+      effort="${GROK_EFFORT:-high}"
+      sub="${model} @ ${effort} · ${LLM_PRESET:-?}"
+    else
+      model="${ANTHROPIC_MODEL:-claude (native)}"
+      sub="${model} · ${LLM_PRESET:-?}"
+    fi
+    # kit banner (chrome) — only when TTY
+    # Note: our emit_executor_line overrides name "banner" above; call via
+    # progress-free plain box if kit banner was shadowed. Reconstruct lightly:
+    printf '%s\n' "⚔ ARMED · ${sub}" >&2
+  fi
 }
 
 # Grok preflight: just ensure the binary is available and looks runnable.
@@ -407,11 +518,257 @@ prepare_grok_worktree() {
   _args=("${rebuilt[@]}")
 }
 
+# Effort as a small text gauge (high=full, medium=mid, low=low).
+effort_gauge() {
+  local e=${1:-high}
+  case "$e" in
+    high)   printf '████ high' ;;
+    medium) printf '██░░ medium' ;;
+    low)    printf '█░░░ low' ;;
+    *)      printf '%s' "$e" ;;
+  esac
+}
+
+# stdout data lines only (no empty KEY=). Chrome via panel when TTY.
+dry_run_report() {
+  local name=$1
+  shift || true
+  local -a user_args=("$@")
+  local body="" rules_len=0 rules_note="(none)"
+  local model effort host would warnings=""
+
+  if [[ -n "${LLM_SYSTEM_APPEND:-}${GROK_RULES:-}" ]]; then
+    local rules="${GROK_RULES:-${LLM_SYSTEM_APPEND:-}}"
+    rules_len=${#rules}
+    rules_note="(set, ${rules_len} chars)"
+  fi
+
+  if is_grok_loadout "$name"; then
+    model="${GROK_MODEL:-grok-4.5}"
+    effort="${GROK_EFFORT:-high}"
+    host="SuperGrok Heavy"
+    would="grok --always-approve"
+    [[ -n "${GROK_MODEL:-}" ]] && would+=" --model ${GROK_MODEL}"
+    would+=" --effort ${effort}"
+    [[ $rules_len -gt 0 ]] && would+=" --rules '...'"
+    if (( ${#user_args[@]} > 0 )); then
+      would+=" ${user_args[*]}"
+    else
+      would+=" [your args: -p, -w, ...]"
+    fi
+
+    # Data on stdout (existing tests + a1). Identity line keeps
+    # "model (effort=…)" shape for harness greps.
+    printf 'executor: %s (effort=%s) @ SuperGrok Heavy (loadout: %s)\n' \
+      "$model" "$effort" "${LLM_PRESET:-$name}"
+    printf 'LLM_PRESET=%s\n' "${LLM_PRESET:-}"
+    printf 'GROK_MODEL=%s\n' "${GROK_MODEL:-}"
+    printf 'GROK_EFFORT=%s\n' "${effort}"
+    printf 'GROK_RULES (or LLM_SYSTEM_APPEND)=%s\n' "$rules_note"
+    printf 'Would exec: %s\n' "$would"
+    printf '(Grok auth is separate; no ANTHROPIC vars used.)\n'
+    if [[ "${LLM_PRESET:-}" == "grok-xhigh" ]]; then
+      warnings="loadout name grok-xhigh is deprecated; Grok 4.5 has no xhigh effort — this lane uses effort=high (same as grok-high)."
+      printf 'note: %s\n' "$warnings"
+    fi
+
+    body=$(printf 'loadout %s\nmodel %s  effort %s\nrules %s\nwould: %s' \
+      "${LLM_PRESET:-$name}" "$model" "$(effort_gauge "$effort")" "$rules_note" "$would")
+    [[ -n $warnings ]] && body+=$(printf '\nwarn: %s' "$warnings")
+  else
+    model="${ANTHROPIC_MODEL:-claude (native)}"
+    if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+      host="$ANTHROPIC_BASE_URL"
+    elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      host="api.anthropic.com (API-billed)"
+    else
+      host="api.anthropic.com (Max subscription)"
+    fi
+    would="claude"
+    if [[ -n "${LLM_SYSTEM_APPEND:-}" ]]; then
+      would+=" --append-system-prompt '...'"
+    fi
+    if [[ -n "${LLM_EXECUTOR_HOOKS:-}" && -f "$ARMORY_HOME/hooks/executor-settings.json" ]]; then
+      would+=" --settings hooks/executor-settings.json"
+    fi
+    if (( ${#user_args[@]} > 0 )); then
+      would+=" ${user_args[*]}"
+    else
+      would+=" [your args]"
+    fi
+
+    local tok="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
+    # Only non-empty KEY= lines (no empty dump)
+    printf 'LLM_PRESET=%s\n' "${LLM_PRESET:-}"
+    [[ -n "${ANTHROPIC_BASE_URL:-}" ]] && printf 'ANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL"
+    [[ -n $tok ]] && printf 'ANTHROPIC_AUTH_TOKEN=%s…(masked)\n' "${tok:0:6}"
+    [[ -n "${ANTHROPIC_MODEL:-}" ]] && printf 'ANTHROPIC_MODEL=%s\n' "$ANTHROPIC_MODEL"
+    [[ -n "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}" ]] && printf 'ANTHROPIC_DEFAULT_OPUS_MODEL=%s\n' "$ANTHROPIC_DEFAULT_OPUS_MODEL"
+    [[ -n "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}" ]] && printf 'ANTHROPIC_DEFAULT_SONNET_MODEL=%s\n' "$ANTHROPIC_DEFAULT_SONNET_MODEL"
+    [[ -n "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" ]] && printf 'ANTHROPIC_DEFAULT_HAIKU_MODEL=%s\n' "$ANTHROPIC_DEFAULT_HAIKU_MODEL"
+    [[ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]] && printf 'CLAUDE_CODE_SUBAGENT_MODEL=%s\n' "$CLAUDE_CODE_SUBAGENT_MODEL"
+    [[ -n "${API_TIMEOUT_MS:-}" ]] && printf 'API_TIMEOUT_MS=%s\n' "$API_TIMEOUT_MS"
+    [[ -n "${LLM_SYSTEM_APPEND:-}" ]] && printf 'LLM_SYSTEM_APPEND=%s\n' "$rules_note"
+    [[ -n "${LLM_EXECUTOR_HOOKS:-}" ]] && printf 'LLM_EXECUTOR_HOOKS=%s\n' "$LLM_EXECUTOR_HOOKS"
+    printf 'Would exec: %s\n' "$would"
+
+    body=$(printf 'loadout %s\nmodel %s @ %s\nrules %s\nwould: %s' \
+      "${LLM_PRESET:-$name}" "$model" "$host" "$rules_note" "$would")
+  fi
+
+  # Chrome → stderr when TTY (kit panel); silent when non-TTY.
+  if ui_tty; then
+    printf '%s\n' "$body" | panel "dry-run · ${LLM_PRESET:-$name}"
+  fi
+}
+
+# Arsenal rack: fixed columns + badge. Data → stdout.
+# Column 1 is always the loadout name (existing greps: ^name). Primary gets ★ in STATUS.
+list_loadouts() {
+  local found=0 name model_disp host_disp badge status
+  # header (chrome-ish but still data/table on stdout)
+  printf '%-12s %-32s %-28s %s\n' "LOADOUT" "MODEL" "HOST" "STATUS"
+  for f in "$PRESETS_DIR"/*.env; do
+    [[ -e "$f" ]] || continue
+    found=1
+    name=$(basename "$f" .env)
+    (
+      sanitize_parent_loadout
+      set +e; set -a
+      # shellcheck disable=SC1090
+      source "$f" >/dev/null 2>&1
+      set +a
+      if is_grok_loadout "$name"; then
+        model_disp="${GROK_MODEL:-grok-4.5}${GROK_EFFORT:+ (effort=$GROK_EFFORT)}"
+        host_disp="SuperGrok Heavy (via grok CLI)"
+      else
+        model_disp="${ANTHROPIC_MODEL:-native}"
+        host_disp="${ANTHROPIC_BASE_URL:-api.anthropic.com (Max)}"
+      fi
+      badge=$(loadout_badge "$name")
+      status="$badge"
+      [[ "$name" == "$ARMORY_PRIMARY_LOADOUT" ]] && status="${badge} ★"
+      # single width for model col (fixes historical 24-vs-32 host misalignment)
+      printf '%-12s %-32s %-28s %s\n' "$name" "$model_disp" "$host_disp" "$status"
+    )
+  done
+  [[ $found -eq 1 ]] || { echo "armory: no loadouts in $PRESETS_DIR" >&2; exit 1; }
+}
+
+# Interactive pick: fzf + green_fzf_opts when available; else numbered menu.
+# Prints selected loadout name on stdout, then caller launches.
+pick_loadout() {
+  local -a names=()
+  local f name sel fopts preview_cmd
+  for f in "$PRESETS_DIR"/*.env; do
+    [[ -e "$f" ]] || continue
+    names+=("$(basename "$f" .env)")
+  done
+  if (( ${#names[@]} == 0 )); then
+    echo "armory: no loadouts in $PRESETS_DIR" >&2
+    exit 1
+  fi
+
+  if ui_tty && command -v fzf >/dev/null 2>&1; then
+    fopts=$(green_fzf_opts)
+    preview_cmd="cat ${PRESETS_DIR}/{}.env 2>/dev/null | head -80"
+    # shellcheck disable=SC2086
+    sel=$(printf '%s\n' "${names[@]}" | fzf \
+      --prompt='armory pick> ' \
+      --height=60% --reverse \
+      --preview "$preview_cmd" \
+      --preview-window=right,50%,border-rounded \
+      $fopts) || exit 130
+    printf '%s\n' "$sel"
+    return 0
+  fi
+
+  # Numbered fallback (kit choose or plain)
+  if declare -f choose >/dev/null 2>&1; then
+    choose "pick loadout" "${names[@]}"
+  else
+    local i n
+    printf '› pick loadout\n' >&2
+    for i in "${!names[@]}"; do
+      printf '  %d) %s\n' "$((i + 1))" "${names[i]}" >&2
+    done
+    printf 'Choice [1]: ' >&2
+    read -r n </dev/tty || exit 130
+    [[ -z ${n-} ]] && n=1
+    printf '%s\n' "${names[n - 1]}"
+  fi
+}
+
+# Whole-armory health. Exit 0 healthy / 1 problems. Kit checklist on stderr.
+cmd_doctor() {
+  local f name problems=0 sf state
+  local -a items=()
+  sf=$(mktemp 2>/dev/null) || sf="${TMPDIR:-/tmp}/armory-doctor.$$.$RANDOM"
+  : >"$sf"
+
+  printf '%s\n' "doctor · armory health" >&2
+
+  for f in "$PRESETS_DIR"/*.env; do
+    [[ -e "$f" ]] || continue
+    name=$(basename "$f" .env)
+    items+=("${name}:${name}")
+    state=done
+
+    # Isolate preset env in a subshell; never let set -e abort the doctor loop.
+    state=$(
+      sanitize_parent_loadout
+      set +e
+      set -a
+      # shellcheck disable=SC1090
+      source "$f" >/dev/null 2>&1
+      set +a
+
+      if is_grok_loadout "$name"; then
+        command -v grok >/dev/null 2>&1 || { printf 'failed\n'; exit 0; }
+      else
+        command -v claude >/dev/null 2>&1 || { printf 'failed\n'; exit 0; }
+      fi
+      if ! auth_ok_quiet; then
+        printf 'failed\n'
+        exit 0
+      fi
+      if [[ -f "$PRESETS_DIR/executor-append.txt" && ! -r "$PRESETS_DIR/executor-append.txt" ]]; then
+        printf 'failed\n'
+        exit 0
+      fi
+      printf 'done\n'
+    ) || state=failed
+
+    [[ -z $state ]] && state=failed
+    check_set "$sf" "$name" "$state"
+    if [[ $state != done ]]; then
+      problems=1
+    fi
+  done
+
+  if (( ${#items[@]} == 0 )); then
+    echo "armory: no loadouts in $PRESETS_DIR" >&2
+    rm -f "$sf"
+    exit 1
+  fi
+
+  checklist "$sf" "${items[@]}"
+  rm -f "$sf"
+
+  if (( problems )); then
+    echo "armory: doctor found problems (missing binary or credentials)" >&2
+    exit 1
+  fi
+  echo "armory: doctor ok — all loadouts healthy" >&2
+  exit 0
+}
+
 launch_grok() {
   local user_args=("$@")
   local orig_args=("$@")   # status record keeps the caller's -w for the worktree field
   grok_preflight
-  grok_banner
+  arm_sequence launch
+  emit_executor_line
   prepare_grok_worktree user_args
 
   local grok_cmd=(grok)
@@ -442,75 +799,75 @@ launch_grok() {
   exec "${grok_cmd[@]}"
 }
 
+launch_claude() {
+  arm_sequence launch
+  emit_executor_line
+  local extra_args=()
+  # Weak executor models tend to end their turn after each step; presets
+  # can set LLM_SYSTEM_APPEND to inject a persistence instruction.
+  if [[ -n "${LLM_SYSTEM_APPEND:-}" ]]; then
+    extra_args+=(--append-system-prompt "$LLM_SYSTEM_APPEND")
+  fi
+  # Executor guardrails: post-edit TS/import check + uncommitted-work stop
+  # gate. Opt-in per preset via LLM_EXECUTOR_HOOKS=1.
+  if [[ -n "${LLM_EXECUTOR_HOOKS:-}" && -f "$ARMORY_HOME/hooks/executor-settings.json" ]]; then
+    extra_args+=(--settings "$ARMORY_HOME/hooks/executor-settings.json")
+  fi
+  write_agent_status_record "claude" "$@" || true
+  exec claude "${extra_args[@]}" "$@"
+}
+
 case "${1:-}" in
   ""|-h|--help)
     usage; exit 0 ;;
   --list)
-    found=0
-    for f in "$PRESETS_DIR"/*.env; do
-      [[ -e "$f" ]] || continue
-      found=1
-      name=$(basename "$f" .env)
-      (
-        # Always start the display subshell clean so a parent loadout's
-        # exported vars (LLM_GROK etc) cannot misclassify every row as grok.
-        sanitize_parent_loadout
-        set +e; set -a
-        # shellcheck disable=SC1090
-        source "$f" >/dev/null 2>&1
-        set +a
-        if [[ "${LLM_GROK:-0}" == "1" || "$name" == grok* ]]; then
-          model_disp="${GROK_MODEL:-grok-4.5}${GROK_EFFORT:+ (effort=$GROK_EFFORT)}"
-          host_disp="SuperGrok Heavy (via grok CLI)"
-          printf '%-12s %-32s %s\n' "$name" "$model_disp" "$host_disp"
-        else
-          printf '%-12s %-24s %s\n' "$name" "${ANTHROPIC_MODEL:-native}" \
-            "${ANTHROPIC_BASE_URL:-api.anthropic.com (Max)}"
-        fi
-      )
-    done
-    [[ $found -eq 1 ]] || { echo "armory: no loadouts in $PRESETS_DIR" >&2; exit 1; }
+    list_loadouts
     exit 0 ;;
+  pick)
+    sel=$(pick_loadout) || exit $?
+    # re-exec self with selected loadout (remaining args pass through)
+    shift
+    exec "$0" "$sel" "$@"
+    ;;
+  doctor)
+    cmd_doctor
+    ;;
   --dry-run)
     [[ $# -ge 2 ]] || { usage; exit 1; }
     resolve "$2"
     check_auth
-    if [[ "${LLM_GROK:-0}" == "1" || "$2" == grok* ]]; then
-      echo "▶ (dry-run) executor: ${GROK_MODEL:-grok-4.5} (effort=${GROK_EFFORT:-high}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})"
-      echo "LLM_PRESET=${LLM_PRESET:-}"
-      echo "GROK_MODEL=${GROK_MODEL:-}"
-      echo "GROK_EFFORT=${GROK_EFFORT:-high}"
-      echo "GROK_RULES (or LLM_SYSTEM_APPEND)=${LLM_SYSTEM_APPEND:+(set, ${#LLM_SYSTEM_APPEND} chars)}"
-      echo "Would exec: grok --always-approve${GROK_MODEL:+ --model $GROK_MODEL} --effort ${GROK_EFFORT:-high} --rules '...' [your args: -p, -w, ...]"
-      echo "(Grok auth is separate; no ANTHROPIC vars used.)"
-      if [[ "${LLM_PRESET:-}" == "grok-xhigh" ]]; then
-        echo "note: loadout name grok-xhigh is deprecated; Grok 4.5 has no xhigh effort — this lane uses effort=high (same as grok-high)."
-      fi
-    else
-      banner
-      tok="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
-      echo "LLM_PRESET=${LLM_PRESET:-}"
-      echo "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}"
-      echo "ANTHROPIC_AUTH_TOKEN=${tok:+${tok:0:6}…(masked)}"
-      echo "ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}"
-      echo "ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
-      echo "ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-}"
-      echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
-      echo "CLAUDE_CODE_SUBAGENT_MODEL=${CLAUDE_CODE_SUBAGENT_MODEL:-}"
-      echo "API_TIMEOUT_MS=${API_TIMEOUT_MS:-}"
-      echo "LLM_SYSTEM_APPEND=${LLM_SYSTEM_APPEND:+(set, ${#LLM_SYSTEM_APPEND} chars)}"
-      echo "LLM_EXECUTOR_HOOKS=${LLM_EXECUTOR_HOOKS:-}"
-    fi
+    shift 2
+    dry_run_report "${LLM_PRESET:-}" "$@"
     exit 0 ;;
   --*)
     usage; exit 1 ;;
   *)
     preset=$1; shift
+    # Support `armory <loadout> … --dry-run` (spec a1 smoke) as well as
+    # `armory --dry-run <loadout>`. --dry-run is consumed by armory and never
+    # forwarded to the child CLI.
+    dry_flag=0
+    user_args=()
+    for _arg in "$@"; do
+      if [[ "$_arg" == "--dry-run" ]]; then
+        dry_flag=1
+      else
+        user_args+=("$_arg")
+      fi
+    done
+    set -- "${user_args[@]+"${user_args[@]}"}"
+
     # Sanitize before resolve so parent loadout state (from e.g. this session
     # being a grok-xhigh child) does not bleed into the requested preset.
     sanitize_parent_loadout
     resolve "$preset"
     check_auth
+
+    if (( dry_flag )); then
+      dry_run_report "${LLM_PRESET:-$preset}" "$@"
+      exit 0
+    fi
+
     preflight
 
     # SAGE fleet provenance (agentic-sage plan 024 companion): stamp parent
@@ -524,23 +881,10 @@ case "${1:-}" in
       fi
     fi
 
-    if [[ "${LLM_GROK:-0}" == "1" || "$preset" == grok* ]]; then
+    if is_grok_loadout "$preset"; then
       launch_grok "$@"
     else
-      banner
-      extra_args=()
-      # Weak executor models tend to end their turn after each step; presets
-      # can set LLM_SYSTEM_APPEND to inject a persistence instruction.
-      if [[ -n "${LLM_SYSTEM_APPEND:-}" ]]; then
-        extra_args+=(--append-system-prompt "$LLM_SYSTEM_APPEND")
-      fi
-      # Executor guardrails: post-edit TS/import check + uncommitted-work stop
-      # gate. Opt-in per preset via LLM_EXECUTOR_HOOKS=1.
-      if [[ -n "${LLM_EXECUTOR_HOOKS:-}" && -f "$ARMORY_HOME/hooks/executor-settings.json" ]]; then
-        extra_args+=(--settings "$ARMORY_HOME/hooks/executor-settings.json")
-      fi
-      write_agent_status_record "claude" "$@" || true
-      exec claude "${extra_args[@]}" "$@"
+      launch_claude "$@"
     fi
     ;;
 esac
