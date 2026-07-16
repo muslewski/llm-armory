@@ -18,7 +18,7 @@ export LLM_LAB_HOME="$ARMORY_HOME"     # compat for old hooks
 export PRESETS_DIR   # preset files use it to source providers/*.env
 
 # GREEN-UI-KIT (or plain fallbacks). Path override: GREEN_UI=/path/to/green-ui.sh
-_ARMORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+_ARMORY_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/ui.sh
 source "$_ARMORY_ROOT/lib/ui.sh"
 
