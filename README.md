@@ -109,6 +109,19 @@ Show which loadout is currently armed:
 
 See `templates/armory-snippet.md` for a ready-to-paste block for your `CLAUDE.md` / `AGENTS.md`.
 
+## Works well with
+
+The armory is **standalone-first**: loadouts launch the same way with or without
+sibling tools installed. Nothing errors when they are absent. When co-installed,
+optional extras appear via the [Agent Status Providers](https://github.com/muslewski/status-herald/blob/main/docs/AGENT-STATUS-PROVIDERS.md)
+convention (armory writes launch records; details in [`INTEROP.md`](INTEROP.md)).
+
+| Sibling | Extra when installed |
+|---------|----------------------|
+| **[status-herald](https://github.com/muslewski/status-herald)** | Curtain / bars can show `model@effort` (and preset) for armory children from the launch session stamp. |
+| **[agentic-sage](https://github.com/muslewski/agentic-sage)** | Nested fleet provenance via `SAGE_PARENT` (exported at launch) and the session record’s `parent_session` field. |
+| **[token-oracle](https://github.com/muslewski/token-oracle)** | Refreshes live model truth after launch; armory only stamps what was known at `exec`. |
+
 ## Credits
 
 The `free` loadout runs against **[freellmapi](https://github.com/tashfeenahmed/freellmapi)** — a self-hosted free-tier LLM API aggregator by [tashfeenahmed](https://github.com/tashfeenahmed) (this project is not affiliated with it). Self-host runbook: [`freellmapi/NOTES.md`](freellmapi/NOTES.md).
