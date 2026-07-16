@@ -7,7 +7,9 @@ LLM="$PWD/bin/llm"
 # --- fixture lab home ---
 export LLM_ARMORY_HOME="$(mktemp -d)"
 export LLM_LAB_HOME="$LLM_ARMORY_HOME"  # compat for old references
-trap 'rm -rf "$LLM_ARMORY_HOME"' EXIT
+# as_base is created later for agent-status tests; expanded empty until then.
+as_base=""
+trap 'rm -rf "$LLM_ARMORY_HOME" ${as_base:+"$as_base"}' EXIT
 mkdir -p "$LLM_ARMORY_HOME/presets/providers"
 
 cat > "$LLM_ARMORY_HOME/presets/test.env" <<'EOF'
@@ -34,15 +36,28 @@ export LLM_REQUIRES_CREDENTIAL=1
 export ANTHROPIC_MODEL=some-remote-model
 EOF
 
-# --- fake claude on PATH ---
+# --- fake claude + grok on PATH ---
 FAKEBIN="$(mktemp -d)"
 cat > "$FAKEBIN/claude" <<'EOF'
 #!/usr/bin/env bash
 echo "CLAUDE_ARGS:$*"
 echo "CLAUDE_URL:${ANTHROPIC_BASE_URL:-none}"
 echo "CLAUDE_MODEL:${ANTHROPIC_MODEL:-none}"
+echo "CLAUDE_PID:$$"
 EOF
 chmod +x "$FAKEBIN/claude"
+cat > "$FAKEBIN/grok" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  echo "grok 0.0.0-fixture"
+  exit 0
+fi
+echo "GROK_ARGS:$*"
+echo "GROK_MODEL:${GROK_MODEL:-none}"
+echo "GROK_EFFORT:${GROK_EFFORT:-none}"
+echo "GROK_PID:$$"
+EOF
+chmod +x "$FAKEBIN/grok"
 export PATH="$FAKEBIN:$PATH"
 
 # Fixture URLs are fake — skip the pool preflight globally; section 7 tests it
@@ -80,6 +95,14 @@ EOF
 cat > "$LLM_ARMORY_HOME/presets/clifixture.env" <<'EOF'
 export LLM_PRESET=clifixture
 export ANTHROPIC_MODEL=cli-fixture
+EOF
+
+# grok-high fixture for agent-status launch-record tests (mirrors real pin)
+cat > "$LLM_ARMORY_HOME/presets/grok-high.env" <<'EOF'
+export LLM_PRESET=grok-high
+export LLM_GROK=1
+export GROK_MODEL=grok-4.5
+export GROK_EFFORT=high
 EOF
 
 pass=0; fail=0
@@ -200,6 +223,77 @@ check "polluted parent + clifixture dry-run has correct model" grep -q 'ANTHROPI
 check "polluted parent + clifixture dry-run not grok"  sh -c '! grep -q "grok-build" <<<"$1"' _ "$poll_dry"
 clean_grok_dry=$("$LLM" --dry-run grokfixture 2>/dev/null)
 check "clean parent + grokfixture dry-run shows grok" grep -qE 'grok-(4\.5|build) \(effort=high\)' <<<"$clean_grok_dry"
+
+# 12. Agent Status Provider launch records (schema 1)
+#     Soft-fail law: unwritable status dir must never break launch.
+#     Records use pid-key fallback; fake child prints GROK_PID/CLAUDE_PID.
+as_base="$(mktemp -d)"
+
+export AGENT_STATUS_DIR="$as_base/as1"
+mkdir -p "$AGENT_STATUS_DIR"
+grok_out=$("$LLM" grok-high -p noop 2>/dev/null)
+child_pid=$(grep -oE 'GROK_PID:[0-9]+' <<<"$grok_out" | head -1 | cut -d: -f2)
+rec="$AGENT_STATUS_DIR/sessions/grok-pid${child_pid}.json"
+check "launch writes session record" test -f "$rec"
+check "session record is valid JSON" python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$rec"
+check "session record written_by" grep -q '"written_by": "llm-armory"' "$rec"
+check "session record model pin" grep -q '"model": "grok-4.5"' "$rec"
+check "session record preset" grep -q '"preset": "grok-high"' "$rec"
+check "session record source_cli" grep -q '"source_cli": "grok"' "$rec"
+check "session record ttl_ms" grep -q '"ttl_ms": 43200000' "$rec"
+hb="$AGENT_STATUS_DIR/providers/llm-armory.json"
+check "launch writes provider heartbeat" test -f "$hb"
+check "heartbeat is valid JSON" python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$hb"
+check "heartbeat tool name" grep -q '"tool": "llm-armory"' "$hb"
+check "heartbeat capabilities" grep -q '"capabilities": \["launch"\]' "$hb"
+
+# soft-fail: unwritable status dir must not break launch
+export AGENT_STATUS_DIR="$as_base/ro"
+mkdir -p "$AGENT_STATUS_DIR"
+chmod 000 "$AGENT_STATUS_DIR"
+soft_out=$("$LLM" grok-high -p noop 2>/dev/null); soft_rc=$?
+chmod 755 "$AGENT_STATUS_DIR" 2>/dev/null || true
+check "soft-fail: launch survives unwritable status dir" test $soft_rc -eq 0
+check "soft-fail: fake grok still ran" grep -q 'GROK_ARGS:' <<<"$soft_out"
+
+# worktree + parent_session fields
+export AGENT_STATUS_DIR="$as_base/as2"
+mkdir -p "$AGENT_STATUS_DIR"
+export SAGE_PARENT="parent-1"
+wt_out=$(SAGE_PARENT=parent-1 "$LLM" grok-high -w my-feature -p noop 2>/dev/null)
+wt_pid=$(grep -oE 'GROK_PID:[0-9]+' <<<"$wt_out" | head -1 | cut -d: -f2)
+wt_rec="$AGENT_STATUS_DIR/sessions/grok-pid${wt_pid}.json"
+check "record includes worktree" grep -q '"worktree": "my-feature"' "$wt_rec"
+check "record includes parent_session" grep -q '"parent_session": "parent-1"' "$wt_rec"
+unset SAGE_PARENT
+
+# json escaping: cwd with quotes/spaces survives python3 -m json.tool
+export AGENT_STATUS_DIR="$as_base/as3"
+mkdir -p "$AGENT_STATUS_DIR"
+esc_cwd="$as_base/path with \"quotes\" and spaces"
+mkdir -p "$esc_cwd"
+esc_out=$(cd "$esc_cwd" && "$LLM" grok-high -p noop 2>/dev/null)
+esc_pid=$(grep -oE 'GROK_PID:[0-9]+' <<<"$esc_out" | head -1 | cut -d: -f2)
+esc_rec="$AGENT_STATUS_DIR/sessions/grok-pid${esc_pid}.json"
+check "escaped cwd record exists" test -f "$esc_rec"
+check "escaped cwd is valid JSON" python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$esc_rec"
+check "escaped cwd preserves path substance" python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert 'quotes' in d['cwd'] and 'spaces' in d['cwd'], d['cwd']
+" "$esc_rec"
+
+# claude path also writes a record
+export AGENT_STATUS_DIR="$as_base/as4"
+mkdir -p "$AGENT_STATUS_DIR"
+cli_out=$("$LLM" test -p hello 2>/dev/null)
+cli_pid=$(grep -oE 'CLAUDE_PID:[0-9]+' <<<"$cli_out" | head -1 | cut -d: -f2)
+cli_rec="$AGENT_STATUS_DIR/sessions/claude-pid${cli_pid}.json"
+check "claude launch writes session record" test -f "$cli_rec"
+check "claude record source_cli" grep -q '"source_cli": "claude"' "$cli_rec"
+check "claude record model" grep -q '"model": "fixture-model-pro"' "$cli_rec"
+
+unset AGENT_STATUS_DIR
 
 echo "----"
 echo "passed=$pass failed=$fail"

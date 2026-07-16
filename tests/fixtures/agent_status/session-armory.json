@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "source_cli": "grok",
+  "pid": 12345,
+  "cwd": "/home/user/repo",
+  "model": "grok-4.5",
+  "effort": "high",
+  "preset": "grok-high",
+  "worktree": "my-feature",
+  "parent_session": "sage-parent-id-if-any",
+  "written_by": "llm-armory",
+  "started_at": 1784200000000,
+  "updated_at": 1784200000000,
+  "ttl_ms": 43200000
+}
