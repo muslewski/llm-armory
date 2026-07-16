@@ -34,7 +34,10 @@ Primary use (from Fable advisor sessions):
   $cmd quality                 pure Fable/Max advisor session
   $cmd grok-high -p "..." -w my-worktree
                                arm with Grok 4.5 (effort high)
-                               Headless grok with model pin + contract + worktree.
+                               Headless grok with model pin + contract.
+                               -w: armory materializes <repo>/.claude/worktrees/<name>
+                               (branch <name>) and launches the child there via --cwd
+                               (grok's own -w is a silent no-op in headless mode).
 
 Note: Grok 4.5 efforts are high|medium|low only — there is no xhigh.
       Loadout name grok-xhigh is a deprecated alias of grok-high.
@@ -303,10 +306,113 @@ write_agent_status_record() {
   return 0
 }
 
+# Armory-owned worktree materialization for grok children.
+# The grok CLI silently ignores -w/--worktree in headless -p mode (verified
+# 2026-07-16, grok 0.2.101), and grok-created worktrees live under
+# ~/.grok/worktrees anyway — not the repo-local .claude/worktrees/ convention.
+# So the armory creates <repo>/.claude/worktrees/<name> itself, strips the
+# worktree flags, and points the child at it via --cwd. Failures are LOUD:
+# a silent fallback to the main checkout is exactly the bug this prevents
+# (2026-07-16 fleet: 75 children all landed on their repos' main checkouts).
+# Mutates the caller's args array via nameref.
+prepare_grok_worktree() {
+  local -n _args=$1
+  local name="" ref="" cwd_base="" arg prev=""
+
+  for arg in "${_args[@]}"; do
+    case "$prev" in
+      -w|--worktree) name=$arg ;;
+      --worktree-ref) ref=$arg ;;
+      --cwd) cwd_base=$arg ;;
+    esac
+    case "$arg" in
+      -w=*) name=${arg#-w=} ;;
+      --worktree=*) name=${arg#--worktree=} ;;
+      --worktree-ref=*) ref=${arg#--worktree-ref=} ;;
+      --cwd=*) cwd_base=${arg#--cwd=} ;;
+    esac
+    prev=$arg
+  done
+
+  # Trailing value-less flags would otherwise slip through as "no worktree".
+  if (( ${#_args[@]} > 0 )); then
+    case "${_args[-1]}" in
+      -w|--worktree|--worktree-ref)
+        echo "armory: ${_args[-1]} requires a value" >&2; exit 1 ;;
+    esac
+  fi
+
+  if [[ -z "$name" && -n "$ref" ]]; then
+    echo "armory: --worktree-ref requires -w/--worktree <name>" >&2; exit 1
+  fi
+  [[ -n "$name" ]] || return 0
+
+  if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "armory: -w/--worktree requires a safe name (got '$name'; allowed: alnum . _ -)" >&2
+    exit 1
+  fi
+
+  local toplevel
+  if ! toplevel=$(git -C "${cwd_base:-$PWD}" rev-parse --show-toplevel 2>/dev/null); then
+    echo "armory: -w $name: '${cwd_base:-$PWD}' is not a git repo (worktrees need one)" >&2
+    exit 1
+  fi
+
+  local wt_path="$toplevel/.claude/worktrees/$name"
+  mkdir -p "$toplevel/.claude/worktrees"
+  if ! git -C "$toplevel" check-ignore -q .claude/worktrees 2>/dev/null; then
+    echo "armory: warning: .claude/worktrees is not gitignored in $toplevel (add it — see WORKTREES.md)" >&2
+  fi
+
+  # Concurrency-safe creation: parallel fleet launches race on git's
+  # index/worktree locks; retry with jitter, and treat an existing valid
+  # worktree as success (idempotent relaunch).
+  local attempt max_attempts=6 add_err=""
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if [[ -f "$wt_path/.git" ]] && git -C "$wt_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "▶ worktree: $wt_path (reusing existing)" >&2
+      break
+    fi
+    if git -C "$toplevel" show-ref --verify --quiet "refs/heads/$name"; then
+      if add_err=$(git -C "$toplevel" worktree add "$wt_path" "$name" 2>&1); then
+        echo "▶ worktree: $wt_path (existing branch $name)" >&2
+        break
+      fi
+    else
+      if add_err=$(git -C "$toplevel" worktree add -b "$name" "$wt_path" ${ref:+"$ref"} 2>&1); then
+        echo "▶ worktree: $wt_path (new branch $name${ref:+ from $ref})" >&2
+        break
+      fi
+    fi
+    if (( attempt == max_attempts )); then
+      echo "armory: failed to create worktree $wt_path after $max_attempts attempts:" >&2
+      echo "$add_err" >&2
+      exit 1
+    fi
+    sleep "0.$(( (RANDOM % 5) + 2 ))"
+  done
+
+  # Rebuild args: drop worktree flags and any caller --cwd, then point the
+  # child at the worktree.
+  local rebuilt=() skip=0
+  for arg in "${_args[@]}"; do
+    if (( skip )); then skip=0; continue; fi
+    case "$arg" in
+      -w|--worktree|--worktree-ref|--cwd) skip=1 ;;
+      -w=*|--worktree=*|--worktree-ref=*|--cwd=*) ;;
+      *) rebuilt+=("$arg") ;;
+    esac
+  done
+  rebuilt+=(--cwd "$wt_path")
+  _args=("${rebuilt[@]}")
+}
+
 launch_grok() {
   local user_args=("$@")
+  local orig_args=("$@")   # status record keeps the caller's -w for the worktree field
   grok_preflight
   grok_banner
+  prepare_grok_worktree user_args
 
   local grok_cmd=(grok)
   grok_cmd+=(--always-approve)
@@ -332,7 +438,7 @@ launch_grok() {
   # User flags appearing after our controls can override (e.g. a different --effort).
   grok_cmd+=("${user_args[@]}")
 
-  write_agent_status_record "grok" "${user_args[@]}" || true
+  write_agent_status_record "grok" "${orig_args[@]}" || true
   exec "${grok_cmd[@]}"
 }
 

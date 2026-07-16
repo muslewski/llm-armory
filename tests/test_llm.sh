@@ -256,16 +256,20 @@ chmod 755 "$AGENT_STATUS_DIR" 2>/dev/null || true
 check "soft-fail: launch survives unwritable status dir" test $soft_rc -eq 0
 check "soft-fail: fake grok still ran" grep -q 'GROK_ARGS:' <<<"$soft_out"
 
-# worktree + parent_session fields
+# worktree + parent_session fields (run inside a scratch repo — armory now
+# materializes the worktree, which needs a git repo)
 export AGENT_STATUS_DIR="$as_base/as2"
 mkdir -p "$AGENT_STATUS_DIR"
 export SAGE_PARENT="parent-1"
-wt_out=$(SAGE_PARENT=parent-1 "$LLM" grok-high -w my-feature -p noop 2>/dev/null)
+WTREC="$(mktemp -d)"
+git -C "$WTREC" init -q && git -C "$WTREC" commit -q --allow-empty -m init
+wt_out=$(cd "$WTREC" && SAGE_PARENT=parent-1 "$LLM" grok-high -w my-feature -p noop 2>/dev/null)
 wt_pid=$(grep -oE 'GROK_PID:[0-9]+' <<<"$wt_out" | head -1 | cut -d: -f2)
 wt_rec="$AGENT_STATUS_DIR/sessions/grok-pid${wt_pid}.json"
 check "record includes worktree" grep -q '"worktree": "my-feature"' "$wt_rec"
 check "record includes parent_session" grep -q '"parent_session": "parent-1"' "$wt_rec"
 unset SAGE_PARENT
+rm -rf "$WTREC"
 
 # json escaping: cwd with quotes/spaces survives python3 -m json.tool
 export AGENT_STATUS_DIR="$as_base/as3"
@@ -294,6 +298,80 @@ check "claude record source_cli" grep -q '"source_cli": "claude"' "$cli_rec"
 check "claude record model" grep -q '"model": "fixture-model-pro"' "$cli_rec"
 
 unset AGENT_STATUS_DIR
+
+# 13. armory-owned grok worktrees: the grok CLI silently ignores -w/--worktree
+#     in headless -p mode (verified 2026-07-16, grok 0.2.101), and grok-created
+#     worktrees live under ~/.grok/worktrees anyway. So armory must materialize
+#     <repo>/.claude/worktrees/<name> itself, strip the worktree flags, and
+#     point the child at it via --cwd.
+WT="$(mktemp -d)"
+git -C "$WT" init -q
+printf '.claude/worktrees/\n' > "$WT/.gitignore"
+git -C "$WT" add .gitignore && git -C "$WT" commit -qm init
+
+wt13=$(cd "$WT" && "$LLM" grok-high -w feat-x -p noop 2>"$LLM_ARMORY_HOME/err13")
+check "wt: worktree materialized" test -f "$WT/.claude/worktrees/feat-x/.git"
+check "wt: branch matches name" test "$(git -C "$WT/.claude/worktrees/feat-x" branch --show-current 2>/dev/null)" = "feat-x"
+check "wt: -w stripped from child args" sh -c '! grep -qE -- "GROK_ARGS:.*(-w |--worktree)" <<<"$1"' _ "$wt13"
+check "wt: child --cwd points at worktree" grep -q -- "--cwd $WT/.claude/worktrees/feat-x" <<<"$wt13"
+check "wt: stderr notes worktree" grep -q 'worktree' "$LLM_ARMORY_HOME/err13"
+
+# equals form
+wty=$(cd "$WT" && "$LLM" grok-high --worktree=feat-y -p noop 2>/dev/null)
+check "wt: --worktree=NAME form works" test -f "$WT/.claude/worktrees/feat-y/.git"
+
+# relaunch with same name reuses the worktree
+wt13c=$(cd "$WT" && "$LLM" grok-high -w feat-x -p noop 2>/dev/null); rc13c=$?
+check "wt: relaunch same name reuses worktree" test $rc13c -eq 0
+check "wt: reuse still rewrites --cwd" grep -q -- "--cwd $WT/.claude/worktrees/feat-x" <<<"$wt13c"
+
+# --cwd <repo> from outside the repo + -w: worktree created in that repo,
+# and --cwd is rewritten (exactly one --cwd in child args)
+OUTSIDE="$(mktemp -d)"
+wt13d=$(cd "$OUTSIDE" && "$LLM" grok-high --cwd "$WT" -w feat-z -p noop 2>/dev/null)
+check "wt: --cwd repo + -w creates in that repo" test -f "$WT/.claude/worktrees/feat-z/.git"
+check "wt: --cwd rewritten to worktree" grep -q -- "--cwd $WT/.claude/worktrees/feat-z" <<<"$wt13d"
+check "wt: exactly one --cwd in child args" test "$(grep -o -- '--cwd' <<<"$wt13d" | wc -l)" -eq 1
+
+# --worktree-ref: worktree based on the named ref, not current HEAD
+git -C "$WT" branch base-ref HEAD
+git -C "$WT" commit -q --allow-empty -m newer
+wt13r=$(cd "$WT" && "$LLM" grok-high -w feat-r --worktree-ref base-ref -p noop 2>/dev/null)
+check "wt: --worktree-ref respected" test "$(git -C "$WT/.claude/worktrees/feat-r" rev-parse HEAD)" = "$(git -C "$WT" rev-parse base-ref)"
+check "wt: --worktree-ref stripped from child args" sh -c '! grep -q -- "--worktree-ref" <<<"$1"' _ "$wt13r"
+
+# concurrency: 4 parallel same-repo launches must all materialize
+for n in p1 p2 p3 p4; do (cd "$WT" && "$LLM" grok-high -w "par-$n" -p noop >/dev/null 2>&1) & done
+wait
+ok13=1; for n in p1 p2 p3 p4; do [ -f "$WT/.claude/worktrees/par-$n/.git" ] || ok13=0; done
+check "wt: 4 concurrent launches all materialize" test $ok13 -eq 1
+
+# failure modes must be LOUD (silent fallback to main checkout is the bug)
+(cd "$OUTSIDE" && "$LLM" grok-high -w nope -p noop) >/dev/null 2>"$LLM_ARMORY_HOME/err13b"; rc13e=$?
+check "wt: non-repo cwd exits nonzero" test $rc13e -ne 0
+check "wt: non-repo error names problem" grep -q 'not a git repo' "$LLM_ARMORY_HOME/err13b"
+
+(cd "$WT" && "$LLM" grok-high -w '../evil' -p noop) >/dev/null 2>&1; rc13f=$?
+check "wt: unsafe name exits nonzero" test $rc13f -ne 0
+
+(cd "$WT" && "$LLM" grok-high -p noop -w) >/dev/null 2>&1; rc13g=$?
+check "wt: trailing -w without name exits nonzero" test $rc13g -ne 0
+
+(cd "$WT" && "$LLM" grok-high --worktree-ref base-ref -p noop) >/dev/null 2>&1; rc13i=$?
+check "wt: --worktree-ref without -w exits nonzero" test $rc13i -ne 0
+
+# unignored .claude/worktrees -> warn but launch
+WT2="$(mktemp -d)"
+git -C "$WT2" init -q && git -C "$WT2" commit -q --allow-empty -m init
+(cd "$WT2" && "$LLM" grok-high -w feat-q -p noop) >/dev/null 2>"$LLM_ARMORY_HOME/err13e"; rc13h=$?
+check "wt: unignored worktrees dir still launches" test $rc13h -eq 0
+check "wt: unignored worktrees dir warns" grep -qi 'gitignore' "$LLM_ARMORY_HOME/err13e"
+
+# no -w: args untouched, no worktree machinery
+wt13n=$(cd "$WT" && "$LLM" grok-high --cwd "$WT" -p noop 2>/dev/null)
+check "wt: without -w, --cwd passes through unchanged" grep -q -- "--cwd $WT -p noop" <<<"$wt13n"
+
+rm -rf "$WT" "$WT2" "$OUTSIDE"
 
 echo "----"
 echo "passed=$pass failed=$fail"

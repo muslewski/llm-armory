@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`-w`/`--worktree` now actually isolates grok children** — the grok CLI
+  silently ignores `-w`/`--worktree` in headless `-p` mode (verified 2026-07-16,
+  grok 0.2.101), and grok-created worktrees live under `~/.grok/worktrees`
+  rather than the repo-local convention. Every child launched with `-w` was in
+  fact running on the repo's main checkout (2026-07-16 research fleet: all 75
+  children). `bin/llm` now materializes `<repo>/.claude/worktrees/<name>`
+  itself (branch `<name>`, optional `--worktree-ref <ref>` base), strips the
+  worktree flags, and launches the child with `--cwd <worktree>`. Creation is
+  concurrency-safe (retry with jitter on git lock races), idempotent (an
+  existing valid worktree is reused), and failures are loud (`exit 1`) —
+  never a silent fallback to the main checkout. Warns when
+  `.claude/worktrees` is not gitignored. Repo base = `--cwd` if given,
+  else `$PWD`; caller `--cwd` is replaced by the worktree path.
+
 ### Added
 
 - **Launch records + provider heartbeat** — immediately before `exec`, `bin/llm`
