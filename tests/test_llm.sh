@@ -73,7 +73,7 @@ EOF
 cat > "$LLM_ARMORY_HOME/presets/grokfixture.env" <<'EOF'
 export LLM_PRESET=grokfixture
 export LLM_GROK=1
-export GROK_EFFORT=xhigh
+export GROK_EFFORT=high
 export ANTHROPIC_MODEL=grok-fixture
 EOF
 
@@ -190,7 +190,7 @@ rm -rf "$GT"
 # 11. parent loadout pollution resistance (using local test fixtures):
 #     Parent claiming to be a "grok" loadout must not cause listing or
 #     dry-run of a non-grok fixture to be misclassified or mis-resolved.
-pollute() { LLM_GROK=1 LLM_PRESET=grokfixture GROK_EFFORT=xhigh "$@"; }
+pollute() { LLM_GROK=1 LLM_PRESET=grokfixture GROK_EFFORT=high "$@"; }
 poll_list=$(pollute "$LLM" --list 2>/dev/null)
 check "polluted --list still lists clifixture" grep -q '^clifixture' <<<"$poll_list"
 check "polluted --list clifixture not misclassified grok" sh -c '! grep -q "^clifixture.*grok-build" <<<"$1"' _ "$poll_list"
@@ -199,7 +199,7 @@ poll_dry=$(pollute "$LLM" --dry-run clifixture 2>/dev/null)
 check "polluted parent + clifixture dry-run has correct model" grep -q 'ANTHROPIC_MODEL=cli-fixture' <<<"$poll_dry"
 check "polluted parent + clifixture dry-run not grok"  sh -c '! grep -q "grok-build" <<<"$1"' _ "$poll_dry"
 clean_grok_dry=$("$LLM" --dry-run grokfixture 2>/dev/null)
-check "clean parent + grokfixture dry-run shows grok" grep -q 'grok-build (effort=xhigh)' <<<"$clean_grok_dry"
+check "clean parent + grokfixture dry-run shows grok" grep -qE 'grok-(4\.5|build) \(effort=high\)' <<<"$clean_grok_dry"
 
 echo "----"
 echo "passed=$pass failed=$fail"

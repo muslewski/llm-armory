@@ -13,7 +13,7 @@
 
 The armory holds named **loadouts** (executor lanes) you can pull for different kinds of work.
 
-Fable (Claude Code) acts as the advisor. When you need heavy lifting, you explicitly **arm** the session by choosing the right loadout from the armory — primarily **grok-xhigh** (SuperGrok Heavy at xhigh effort).
+Fable (Claude Code) acts as the advisor. When you need heavy lifting, you explicitly **arm** the session by choosing the right loadout from the armory — primarily **`grok-high`** (Grok 4.5 at effort **high**; Grok 4.5 supports high|medium|low only — no xhigh).
 
 This is built for deliberate hybrid advisor + executor patterns from Claude CLI. Pure Grok sessions should use their native `spawn_subagent` tools instead.
 
@@ -21,9 +21,9 @@ This is built for deliberate hybrid advisor + executor patterns from Claude CLI.
 
 ```bash
 armory --list                     # list available loadouts
-armory --dry-run grok-xhigh
+armory --dry-run grok-high
 armory quality                    # native Fable/Max advisor session (unarmed)
-armory grok-xhigh -p "task brief" -w my-exec   # arm with Grok xhigh executor
+armory grok-high -p "task brief" -w my-exec   # arm with Grok 4.5 @ effort high
 ```
 
 The launcher lives at `bin/llm`.
@@ -52,13 +52,14 @@ armory --help
 | Loadout     | Backend                  | Use for |
 |-------------|--------------------------|---------|
 | quality     | Max / Fable (native)     | pure advisor / judgment sessions (equivalent to plain `claude`) |
-| grok-xhigh  | SuperGrok Heavy (xhigh)  | **Primary loadout** — arm Fable advisor sessions with heavy Grok execution. `grok -p --effort xhigh` + worktrees + contract. Not for native Grok sessions. |
+| grok-high   | Grok 4.5 (effort high)   | **Primary loadout** — arm Fable advisor sessions. Pins `--model grok-4.5 --effort high` + worktrees + contract. Grok 4.5 efforts: high\|medium\|low only. |
+| grok-xhigh  | alias → same as grok-high | **Deprecated name** kept for old prompts; does not unlock a stronger effort. |
 | balanced    | DeepSeek API             | (skipped for now) |
 | glm         | z.ai API                 | (skipped for now) |
 | free        | [freellmapi](https://github.com/tashfeenahmed/freellmapi) (self-hosted) | (skipped for now) |
 | burn        | Anthropic API key        | limit-reset days, uncapped Opus |
 
-**Current focus:** Fable as advisor + `armory grok-xhigh`. Legacy cheap dispatch is disabled; grok-xhigh is the ready heavy loadout.
+**Current focus:** Fable as advisor + `armory grok-high`. Legacy cheap dispatch is disabled; grok-high is the ready Grok 4.5 loadout.
 
 ## Skills
 
@@ -102,7 +103,7 @@ Show which loadout is currently armed:
 
 ## Notes
 
-- Designed primarily for Claude Code CLI (Fable as advisor) to arm itself with Grok xhigh executors on explicit instruction.
+- Designed primarily for Claude Code CLI (Fable as advisor) to arm itself with Grok 4.5 (`grok-high`) executors on explicit instruction.
 - Grok-native sessions are unaffected — use `spawn_subagent` and native tools.
 - The legacy "cheap LLM pool" dispatch remains disabled.
 

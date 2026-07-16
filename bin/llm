@@ -26,18 +26,19 @@ Usage:
   $cmd --dry-run <loadout>     preview what will be launched
   $cmd <loadout> [args...]     arm and launch an executor loadout
                                (quality = native Fable advisor)
-                               (grok-xhigh = heavy Grok executor for Fable sessions)
+                               (grok-high = Grok 4.5 @ effort high)
 
 Loadouts live in \$ARMORY_HOME/presets (default ~/Repositories/llm-armory/presets).
 
 Primary use (from Fable advisor sessions):
   $cmd quality                 pure Fable/Max advisor session
-  $cmd grok-xhigh -p "..." -w my-worktree
-                               arm with SuperGrok Heavy (xhigh)
-                               Headless grok with executor contract + worktree.
+  $cmd grok-high -p "..." -w my-worktree
+                               arm with Grok 4.5 (effort high)
+                               Headless grok with model pin + contract + worktree.
 
-Note: This armory is intended for explicit use inside Claude CLI (Fable) sessions.
-      Pure Grok sessions should use native subagents instead.
+Note: Grok 4.5 efforts are high|medium|low only — there is no xhigh.
+      Loadout name grok-xhigh is a deprecated alias of grok-high.
+      This armory is for Claude CLI (Fable) sessions; pure Grok uses native subagents.
       (You can still invoke this binary as \`llm\` during transition.)
 EOF
 }
@@ -60,14 +61,14 @@ resolve() {
 }
 
 # sanitize_parent_loadout clears any control variables that may have been
-# exported by a parent armory loadout (e.g. running inside a grok-xhigh child
+# exported by a parent armory loadout (e.g. running inside a grok-high child
 # and then invoking `armory quality` or `armory --list`). Without this, parent
 # state pollutes classification (grok path taken for non-grok presets) and
 # resolved config for other loadouts.
 sanitize_parent_loadout() {
   # Clear only vars that a preset .env file is expected to (re)define for its
   # own identity. Leave caller overrides like LLM_SKIP_PREFLIGHT alone.
-  unset LLM_GROK GROK_EFFORT LLM_PRESET LLM_REQUIRES_CREDENTIAL \
+  unset LLM_GROK GROK_EFFORT GROK_MODEL LLM_PRESET LLM_REQUIRES_CREDENTIAL \
         ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL \
         ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL \
         ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_EFFORT_LEVEL \
@@ -139,8 +140,9 @@ banner() {
 }
 
 grok_banner() {
-  local effort="${GROK_EFFORT:-xhigh}"
-  echo "▶ executor: grok-build (effort=${effort}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})" >&2
+  local effort="${GROK_EFFORT:-high}"
+  local model="${GROK_MODEL:-grok-4.5}"
+  echo "▶ executor: ${model} (effort=${effort}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})" >&2
 }
 
 # Grok preflight: just ensure the binary is available and looks runnable.
@@ -164,6 +166,12 @@ launch_grok() {
 
   local grok_cmd=(grok)
   grok_cmd+=(--always-approve)
+
+  # Optional explicit model pin (e.g. GROK_MODEL=grok-4.5). Without this the CLI
+  # default applies — which is currently grok-4.5, but pin for determinism.
+  if [[ -n "${GROK_MODEL:-}" ]]; then
+    grok_cmd+=(--model "${GROK_MODEL}")
+  fi
 
   if [[ -n "${GROK_EFFORT:-}" ]]; then
     grok_cmd+=(--effort "${GROK_EFFORT}")
@@ -201,7 +209,7 @@ case "${1:-}" in
         source "$f" >/dev/null 2>&1
         set +a
         if [[ "${LLM_GROK:-0}" == "1" || "$name" == grok* ]]; then
-          model_disp="grok-build${GROK_EFFORT:+ (effort=$GROK_EFFORT)}"
+          model_disp="${GROK_MODEL:-grok-4.5}${GROK_EFFORT:+ (effort=$GROK_EFFORT)}"
           host_disp="SuperGrok Heavy (via grok CLI)"
           printf '%-12s %-32s %s\n' "$name" "$model_disp" "$host_disp"
         else
@@ -217,12 +225,16 @@ case "${1:-}" in
     resolve "$2"
     check_auth
     if [[ "${LLM_GROK:-0}" == "1" || "$2" == grok* ]]; then
-      echo "▶ (dry-run) executor: grok-build (effort=${GROK_EFFORT:-xhigh}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})"
+      echo "▶ (dry-run) executor: ${GROK_MODEL:-grok-4.5} (effort=${GROK_EFFORT:-high}) @ SuperGrok Heavy (loadout: ${LLM_PRESET:-?})"
       echo "LLM_PRESET=${LLM_PRESET:-}"
-      echo "GROK_EFFORT=${GROK_EFFORT:-xhigh}"
+      echo "GROK_MODEL=${GROK_MODEL:-}"
+      echo "GROK_EFFORT=${GROK_EFFORT:-high}"
       echo "GROK_RULES (or LLM_SYSTEM_APPEND)=${LLM_SYSTEM_APPEND:+(set, ${#LLM_SYSTEM_APPEND} chars)}"
-      echo "Would exec: grok --always-approve --effort ${GROK_EFFORT:-xhigh} --rules '...' [your args: -p, -w, ...]"
+      echo "Would exec: grok --always-approve${GROK_MODEL:+ --model $GROK_MODEL} --effort ${GROK_EFFORT:-high} --rules '...' [your args: -p, -w, ...]"
       echo "(Grok auth is separate; no ANTHROPIC vars used.)"
+      if [[ "${LLM_PRESET:-}" == "grok-xhigh" ]]; then
+        echo "note: loadout name grok-xhigh is deprecated; Grok 4.5 has no xhigh effort — this lane uses effort=high (same as grok-high)."
+      fi
     else
       banner
       tok="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
