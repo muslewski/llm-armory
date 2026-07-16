@@ -159,6 +159,150 @@ grok_preflight() {
   fi
 }
 
+# --- Agent Status Provider helpers (schema 1) ---
+# Soft-fail law: record writing must NEVER break or delay a launch.
+# Every call site is guarded (`|| true`); helpers return 0 on any failure.
+# Convention: readers pid-check written_by=llm-armory records (long TTL + pid).
+
+# 1. $AGENT_STATUS_DIR  2. $XDG_RUNTIME_DIR/agent-status  3. ~/.local/state/agent-status
+agent_status_dir() {
+  if [[ -n "${AGENT_STATUS_DIR:-}" ]]; then
+    printf '%s' "$AGENT_STATUS_DIR"
+  elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    printf '%s/agent-status' "$XDG_RUNTIME_DIR"
+  else
+    printf '%s/.local/state/agent-status' "${HOME:-/tmp}"
+  fi
+}
+
+# minimal JSON string escaping: backslash, double-quote, newline/tab → \\ \" \n \t
+json_escape() {
+  local s=${1-}
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '%s' "$s"
+}
+
+# Atomic write: mktemp in destination dir + mv -f (same-filesystem rename).
+# Always returns 0 (soft-fail).
+_agent_status_atomic_write() {
+  local dest=$1
+  local content=$2
+  local dir tmp
+  dir=$(dirname -- "$dest") || return 0
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmp=$(mktemp --tmpdir="$dir" .tmp.XXXXXX 2>/dev/null) \
+    || tmp=$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null) \
+    || return 0
+  if ! printf '%s' "$content" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  if ! mv -f "$tmp" "$dest" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  return 0
+}
+
+# Write session record + provider heartbeat. Always returns 0 (soft-fail law).
+# Usage: write_agent_status_record <child_cli> [user_args...]
+# child_cli: "grok" | "claude"
+# Record path: <dir>/sessions/<child_cli>-pid$$.json (pid-key fallback; no session id pre-exec).
+# Because exec replaces this process, $$ is the child pid after launch.
+write_agent_status_record() {
+  local child_cli=${1:-}
+  shift || true
+  [[ -n "$child_cli" ]] || return 0
+
+  local base worktree="" model="" effort="" preset parent cwd ts key
+  local arg prev="" json hb_json
+
+  # Parse -w / --worktree from remaining user args (omit field when absent).
+  for arg in "$@"; do
+    if [[ "$prev" == "-w" || "$prev" == "--worktree" ]]; then
+      worktree=$arg
+      break
+    fi
+    # support --worktree=value form
+    if [[ "$arg" == --worktree=* ]]; then
+      worktree=${arg#--worktree=}
+      break
+    fi
+    prev=$arg
+  done
+
+  base=$(agent_status_dir 2>/dev/null) || return 0
+  [[ -n "$base" ]] || return 0
+
+  mkdir -p "$base/sessions" "$base/providers" 2>/dev/null || return 0
+
+  ts=$(date +%s%3N 2>/dev/null) || ts=""
+  if [[ -z "$ts" || "$ts" == *%* ]]; then
+    ts=$(date +%s 2>/dev/null) || return 0
+    ts="${ts}000"
+  fi
+
+  preset=${LLM_PRESET:-}
+  parent=${SAGE_PARENT:-}
+  cwd=$(pwd -P 2>/dev/null || pwd 2>/dev/null || printf '')
+
+  if [[ "$child_cli" == "grok" ]]; then
+    model=${GROK_MODEL:-}
+    effort=${GROK_EFFORT:-}
+  else
+    model=${ANTHROPIC_MODEL:-}
+    effort=${CLAUDE_CODE_EFFORT_LEVEL:-}
+  fi
+
+  key="${child_cli}-pid$$"
+
+  # Build session JSON (pretty enough for greppable "key": "value" form);
+  # omit empty optional keys (no nulls).
+  json=$'{\n'
+  json+=$'  "schema": 1,\n'
+  json+="  \"source_cli\": \"$(json_escape "$child_cli")\","$'\n'
+  json+="  \"pid\": $$,"$'\n'
+  json+="  \"cwd\": \"$(json_escape "$cwd")\","$'\n'
+  if [[ -n "$model" ]]; then
+    json+="  \"model\": \"$(json_escape "$model")\","$'\n'
+  fi
+  if [[ -n "$effort" ]]; then
+    json+="  \"effort\": \"$(json_escape "$effort")\","$'\n'
+  fi
+  if [[ -n "$preset" ]]; then
+    json+="  \"preset\": \"$(json_escape "$preset")\","$'\n'
+  fi
+  if [[ -n "$worktree" ]]; then
+    json+="  \"worktree\": \"$(json_escape "$worktree")\","$'\n'
+  fi
+  if [[ -n "$parent" ]]; then
+    json+="  \"parent_session\": \"$(json_escape "$parent")\","$'\n'
+  fi
+  json+=$'  "written_by": "llm-armory",\n'
+  json+="  \"started_at\": ${ts},"$'\n'
+  json+="  \"updated_at\": ${ts},"$'\n'
+  json+=$'  "ttl_ms": 43200000\n'
+  json+='}'
+
+  _agent_status_atomic_write "$base/sessions/${key}.json" "$json" || true
+
+  hb_json=$'{\n'
+  hb_json+=$'  "schema": 1,\n'
+  hb_json+=$'  "tool": "llm-armory",\n'
+  hb_json+="  \"pid\": $$,"$'\n'
+  hb_json+="  \"ts\": ${ts},"$'\n'
+  hb_json+=$'  "ttl_ms": 43200000,\n'
+  hb_json+=$'  "capabilities": ["launch"]\n'
+  hb_json+='}'
+  _agent_status_atomic_write "$base/providers/llm-armory.json" "$hb_json" || true
+
+  return 0
+}
+
 launch_grok() {
   local user_args=("$@")
   grok_preflight
@@ -188,6 +332,7 @@ launch_grok() {
   # User flags appearing after our controls can override (e.g. a different --effort).
   grok_cmd+=("${user_args[@]}")
 
+  write_agent_status_record "grok" "${user_args[@]}" || true
   exec "${grok_cmd[@]}"
 }
 
@@ -288,6 +433,7 @@ case "${1:-}" in
       if [[ -n "${LLM_EXECUTOR_HOOKS:-}" && -f "$ARMORY_HOME/hooks/executor-settings.json" ]]; then
         extra_args+=(--settings "$ARMORY_HOME/hooks/executor-settings.json")
       fi
+      write_agent_status_record "claude" "$@" || true
       exec claude "${extra_args[@]}" "$@"
     fi
     ;;
