@@ -194,7 +194,7 @@ pollute() { LLM_GROK=1 LLM_PRESET=grokfixture GROK_EFFORT=high "$@"; }
 poll_list=$(pollute "$LLM" --list 2>/dev/null)
 check "polluted --list still lists clifixture" grep -q '^clifixture' <<<"$poll_list"
 check "polluted --list clifixture not misclassified grok" sh -c '! grep -q "^clifixture.*grok-build" <<<"$1"' _ "$poll_list"
-check "polluted --list grokfixture classified as grok" grep -q '^grokfixture.*grok-build' <<<"$poll_list"
+check "polluted --list grokfixture classified as grok" grep -qE '^grokfixture.*(grok-4\.5|grok-build)' <<<"$poll_list"
 poll_dry=$(pollute "$LLM" --dry-run clifixture 2>/dev/null)
 check "polluted parent + clifixture dry-run has correct model" grep -q 'ANTHROPIC_MODEL=cli-fixture' <<<"$poll_dry"
 check "polluted parent + clifixture dry-run not grok"  sh -c '! grep -q "grok-build" <<<"$1"' _ "$poll_dry"
