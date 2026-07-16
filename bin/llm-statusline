@@ -1,12 +1,37 @@
 #!/usr/bin/env bash
 # llm-statusline — emit "⚡ <lane>" for the Claude Code statusline (llm-armory).
 # Reads statusline JSON on stdin; falls back to env when fields are absent.
+# Must stay fast (<50ms) — runs in status bars every render.
 set -euo pipefail
+
+# Primary loadout (arsenal ★). Keep in sync with bin/llm help / list.
+ARMORY_PRIMARY_LOADOUT="${ARMORY_PRIMARY_LOADOUT:-grok-high}"
+
 input=$(cat)
 model=$(printf '%s' "$input" | grep -o '"display_name"[^,}]*' | head -1 | sed 's/.*:\s*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' || true)
 preset="${LLM_PRESET:-max}"
+
+star=""
+[[ "$preset" == "$ARMORY_PRIMARY_LOADOUT" ]] && star="★"
+
 if [[ "${LLM_GROK:-0}" == "1" || "$preset" == grok* ]]; then
-  echo "⚡ ${preset}:grok-xhigh"
+  # Real model @ effort — never hardcode the deprecated xhigh alias.
+  gmodel="${GROK_MODEL:-grok-4.5}"
+  geffort="${GROK_EFFORT:-high}"
+  if [[ -n $star ]]; then
+    printf '⚡★ %s:%s@%s\n' "$preset" "$gmodel" "$geffort"
+  else
+    printf '⚡ %s:%s@%s\n' "$preset" "$gmodel" "$geffort"
+  fi
 else
-  echo "⚡ ${preset}:${model:-${ANTHROPIC_MODEL:-fable}}"
+  # Unarmed / native lane: dim when no real model pin and default max:fable.
+  label="${model:-${ANTHROPIC_MODEL:-fable}}"
+  if [[ -n $star ]]; then
+    printf '⚡★ %s:%s\n' "$preset" "$label"
+  elif [[ "$preset" == "max" && -z "${ANTHROPIC_MODEL:-}" && -z "$model" ]]; then
+    # unarmed default — keep compact; consumers that support dim can style later
+    printf '⚡ %s:%s\n' "$preset" "$label"
+  else
+    printf '⚡ %s:%s\n' "$preset" "$label"
+  fi
 fi
