@@ -27,12 +27,12 @@ armory quality                    # native Fable/Max advisor session (unarmed)
 armory grok-high -p "task brief" -w my-exec   # arm with Grok 4.5 @ effort high
 ```
 
-<p align="center"><img src="./assets/demo-mission.gif" width="600" alt="armory --dry-run mission card demo"></p>
+<p align="center"><img src="./assets/demo-mission.gif" width="720" alt="armory --dry-run mission card demo"></p>
 
 The launcher lives at `bin/llm`.
 
 <details><summary>▶ demo</summary>
-<p><img src="./assets/demo-doctor.gif" width="600" alt="armory doctor demo"></p>
+<p><img src="./assets/demo-doctor.gif" width="720" alt="armory doctor demo"></p>
 </details>
 
 ### Setup: make `armory` the command
