@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`fleet` / `fleet-status` / `fleet-report` verbs** — first-class multi-child
+  launch for advisor fleets (replacing hand-rolled bash that nohup'd armory
+  per child). Manifest lines are `<name>|<prompt-file>`; each child gets
+  `<repo>/.claude/worktrees/<name>`, seed copies, and `.child-{out.log,pid,exit}`
+  bookkeeping. `--max-parallel` (default 10) + `--stagger` (default 3s) gate
+  launches without pipeline-subshell `wait` bugs; existing worktrees are
+  refused loudly. `fleet-status` is a read-only dashboard (running / exit /
+  stalled); `fleet-report` parses the last `RESULT:` line and exits 1 if any
+  child is bad. Shared worktree creation via `materialize_repo_worktree`
+  (also used by `-w`). Test-only override: `LLM_FLEET_CHILD_CMD`.
+
 ### Fixed
 
 - **`-w`/`--worktree` now actually isolates grok children** — the grok CLI
