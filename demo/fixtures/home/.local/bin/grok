@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# demo shim — never contacts SuperGrok
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'grok 0.2.101\n'
+  exit 0
+fi
+printf 'grok: demo stub (args: %s)\n' "$*" >&2
+exit 0

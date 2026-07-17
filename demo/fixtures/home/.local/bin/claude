@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# demo shim — never contacts Anthropic
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'claude 1.0.0 (demo)\n'
+  exit 0
+fi
+printf 'claude: demo stub (args: %s)\n' "$*" >&2
+exit 0
