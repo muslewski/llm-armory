@@ -35,7 +35,7 @@ armory fleet-report               # RESULT summary (exit 1 if any bad)
 The launcher lives at `bin/llm`.
 
 <details><summary>▶ demo</summary>
-<p><img src="./assets/demo-doctor.gif" width="720" alt="armory doctor demo"></p>
+<p><img src="./assets/demo-doctor.gif" width="600" alt="armory doctor demo"></p>
 </details>
 
 ### Setup: make `armory` the command
