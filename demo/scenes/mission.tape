@@ -1,10 +1,9 @@
 Output ../assets/demo-mission.gif
 Output build/demo-mission.txt
-# JetBrainsMono Nerd Font (house.tape) is wide: Width 1000 / FontSize 14 /
-# Padding 20 yields only ~66 real cols. Dry-run panel outer width is ~100
-# (driven by the "would:" line). Use a wider canvas so the real pty fits —
-# never export COLUMNS/stty larger than the glyph grid (that wraps mid-border).
-Set Width 1600
+# JetBrains Mono @ FontSize 14 ≈ 9.3px/col → Width 1200 ≈ 124 cols.
+# Mission card longest line needs ~103 cols; comfortable margin, no wrap.
+# Never export COLUMNS/stty larger than the glyph grid (that wraps mid-border).
+Set Width 1200
 Set Height 560
 Set FontSize 14
 Set Padding 20
