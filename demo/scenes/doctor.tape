@@ -1,9 +1,9 @@
 Output ../assets/demo-doctor.gif
 Output build/demo-doctor.txt
-# Match mission chrome (JetBrainsMono @14 needs ~1600px for a usable pty).
-# No forced COLUMNS — bash uses the real glyph-grid width.
-Set Width 1600
-Set Height 560
+# Spec feature size. JetBrains Mono @ FontSize 14 ≈ 9.3px/col →
+# Width 1000 ≈ 103 cols. No forced COLUMNS — bash uses the real glyph-grid width.
+Set Width 1000
+Set Height 500
 Set FontSize 14
 Set Padding 20
 Hide
