@@ -1,10 +1,11 @@
 Output ../assets/demo-mission.gif
 Output build/demo-mission.txt
-Set Width 1000
-Set Height 500
-# Real pty cols ≈103 at FontSize 14 / Padding 20 — enough for the dry-run
-# panel (~100 outer). Do NOT export COLUMNS/stty wider than the pty: the
-# card then draws past the viewport and wraps, breaking box borders.
+# JetBrainsMono Nerd Font (house.tape) is wide: Width 1000 / FontSize 14 /
+# Padding 20 yields only ~66 real cols. Dry-run panel outer width is ~100
+# (driven by the "would:" line). Use a wider canvas so the real pty fits —
+# never export COLUMNS/stty larger than the glyph grid (that wraps mid-border).
+Set Width 1600
+Set Height 560
 Set FontSize 14
 Set Padding 20
 Hide

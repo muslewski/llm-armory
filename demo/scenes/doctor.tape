@@ -1,8 +1,9 @@
 Output ../assets/demo-doctor.gif
 Output build/demo-doctor.txt
-Set Width 1000
-Set Height 500
-# Match mission chrome: real pty width, no forced COLUMNS wider than viewport.
+# Match mission chrome (JetBrainsMono @14 needs ~1600px for a usable pty).
+# No forced COLUMNS — bash uses the real glyph-grid width.
+Set Width 1600
+Set Height 560
 Set FontSize 14
 Set Padding 20
 Hide
