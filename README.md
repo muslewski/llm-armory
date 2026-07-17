@@ -25,6 +25,9 @@ armory --list                     # list available loadouts
 armory --dry-run grok-high
 armory quality                    # native Fable/Max advisor session (unarmed)
 armory grok-high -p "task brief" -w my-exec   # arm with Grok 4.5 @ effort high
+armory fleet grok-high --manifest fleet.txt   # parallel fleet of children
+armory fleet-status               # dashboard of fleet worktrees
+armory fleet-report               # RESULT summary (exit 1 if any bad)
 ```
 
 <p align="center"><img src="./assets/demo-mission.gif" width="720" alt="armory --dry-run mission card demo"></p>
@@ -80,6 +83,48 @@ It is built on the research reality that naive multi-model mixing often *hurts* 
 
 - Skill file: [`skills/fusion-advisor/SKILL.md`](skills/fusion-advisor/SKILL.md)
 - Install: `ln -sfn "$PWD/skills/fusion-advisor" ~/.claude/skills/fusion-advisor`
+
+## Fleet
+
+When one-off `armory <loadout> -w x -p "..."` is not enough, **`fleet`** launches
+many children from a manifest (one worktree + prompt per line), with
+`--max-parallel`, `--stagger`, optional `--seed` file copies, and bookkeeping
+under each worktree (`.child-out.log`, `.child-pid`, `.child-exit`).
+
+Manifest format (`#` comments and blank lines skipped):
+
+```text
+# name|prompt-file  (paths relative to the manifest's directory)
+fix-auth|prompts/fix-auth.md
+fix-billing|prompts/fix-billing.md
+```
+
+Worked example:
+
+```bash
+# From the target app repo (or pass --cwd):
+cat > /tmp/fleet.txt <<'EOF'
+child-a|prompts/a.md
+child-b|prompts/b.md
+EOF
+
+armory fleet grok-high --manifest /tmp/fleet.txt \
+  --max-parallel 10 --stagger 3 --seed .env
+
+armory fleet-status --cwd .
+# child-a | running(pid 12345) | commits=0 | task 1: done — ...
+# child-b | exit=0 | commits=2 | task 3: done — ...
+
+armory fleet-report --cwd .
+# child-a | exit=0 | commits=2 | RESULT: ok — commits: 2 — fixed auth
+# child-b | exit=0 | commits=1 | RESULT: ok — commits: 1 — billing edge
+# fleet: 2 ok · 0 bad of 2
+```
+
+Each child lands in `<repo>/.claude/worktrees/<name>` (same layout as `-w`).
+If that path already exists, fleet **refuses** that child loudly and continues
+others (no silent reuse). Launch success is separate from child success:
+`fleet` exits 0 when every child was launched; use `fleet-report` as the gate.
 
 ## Executor contract
 

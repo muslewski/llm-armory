@@ -39,6 +39,12 @@ Usage:
   $cmd --dry-run <loadout>     mission card: preview what will be launched
   $cmd pick                    fzf/numbered pick then launch
   $cmd doctor                  whole-armory health checklist
+  $cmd fleet <loadout> --manifest FILE [opts]
+                               launch a parallel fleet of executor children
+  $cmd fleet-status [--cwd REPO]
+                               dashboard of fleet worktrees (read-only)
+  $cmd fleet-report [--cwd REPO]
+                               summarize RESULT lines; exit 1 if any bad
   $cmd <loadout> [args...]     arm and launch an executor loadout
                                (quality = native Fable advisor)
                                (grok-high = Grok 4.5 @ effort high)
@@ -53,6 +59,13 @@ Primary use (from Fable advisor sessions):
                                -w: armory materializes <repo>/.claude/worktrees/<name>
                                (branch <name>) and launches the child there via --cwd
                                (grok's own -w is a silent no-op in headless mode).
+
+Fleet (many children from a manifest):
+  $cmd fleet grok-high --manifest fleet.txt --cwd ~/Repos/myapp \\
+       --max-parallel 10 --stagger 3 --seed .env
+  Manifest lines: <name>|<prompt-file>  (# comments and blanks skipped).
+  Each child gets <repo>/.claude/worktrees/<name>, prompt via -p, logs in
+  .child-out.log / .child-exit / .child-pid. See fleet-status / fleet-report.
 
 Note: Grok 4.5 efforts are high|medium|low only — there is no xhigh.
       Loadout name grok-xhigh is a deprecated alias of grok-high.
@@ -417,6 +430,66 @@ write_agent_status_record() {
   return 0
 }
 
+# Safe worktree name: same alphabet as -w / fleet manifest names.
+is_safe_worktree_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+# Ensure <toplevel>/.claude/worktrees exists; warn if not gitignored.
+ensure_worktrees_parent() {
+  local toplevel=$1
+  mkdir -p "$toplevel/.claude/worktrees"
+  if ! git -C "$toplevel" check-ignore -q .claude/worktrees 2>/dev/null; then
+    echo "armory: warning: .claude/worktrees is not gitignored in $toplevel (add it — see WORKTREES.md)" >&2
+  fi
+}
+
+# Shared worktree materialization (used by prepare_grok_worktree and fleet).
+# Creates <toplevel>/.claude/worktrees/<name> branched from optional <ref>.
+# Concurrency-safe: retry with jitter on git lock races. Idempotent for the
+# single-child -w path: an existing valid worktree is reused.
+# Returns 0 on success (path echoed on stdout as the only stdout line when
+# ARMORY_WT_PATH_STDOUT=1; otherwise status messages go to stderr only and
+# the path is written to the nameref out var if provided).
+# Returns 1 on hard failure (message already on stderr).
+# Args: toplevel name [ref] [out_var_nameref]
+materialize_repo_worktree() {
+  local toplevel=$1 name=$2 ref=${3:-} out_var=${4:-}
+  # Local path var must NOT share a name with out_var (printf -v would hit this scope).
+  local __wt="$toplevel/.claude/worktrees/$name"
+  local attempt max_attempts=6 add_err=""
+
+  ensure_worktrees_parent "$toplevel"
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if [[ -f "$__wt/.git" ]] && git -C "$__wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "▶ worktree: $__wt (reusing existing)" >&2
+      [[ -n "$out_var" ]] && printf -v "$out_var" '%s' "$__wt"
+      return 0
+    fi
+    if git -C "$toplevel" show-ref --verify --quiet "refs/heads/$name"; then
+      if add_err=$(git -C "$toplevel" worktree add "$__wt" "$name" 2>&1); then
+        echo "▶ worktree: $__wt (existing branch $name)" >&2
+        [[ -n "$out_var" ]] && printf -v "$out_var" '%s' "$__wt"
+        return 0
+      fi
+    else
+      if add_err=$(git -C "$toplevel" worktree add -b "$name" "$__wt" ${ref:+"$ref"} 2>&1); then
+        echo "▶ worktree: $__wt (new branch $name${ref:+ from $ref})" >&2
+        [[ -n "$out_var" ]] && printf -v "$out_var" '%s' "$__wt"
+        return 0
+      fi
+    fi
+    if (( attempt == max_attempts )); then
+      echo "armory: failed to create worktree $__wt after $max_attempts attempts:" >&2
+      echo "$add_err" >&2
+      return 1
+    fi
+    sleep "0.$(( (RANDOM % 5) + 2 ))"
+  done
+  return 1
+}
+
 # Armory-owned worktree materialization for grok children.
 # The grok CLI silently ignores -w/--worktree in headless -p mode (verified
 # 2026-07-16, grok 0.2.101), and grok-created worktrees live under
@@ -458,7 +531,7 @@ prepare_grok_worktree() {
   fi
   [[ -n "$name" ]] || return 0
 
-  if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  if ! is_safe_worktree_name "$name"; then
     echo "armory: -w/--worktree requires a safe name (got '$name'; allowed: alnum . _ -)" >&2
     exit 1
   fi
@@ -469,39 +542,10 @@ prepare_grok_worktree() {
     exit 1
   fi
 
-  local wt_path="$toplevel/.claude/worktrees/$name"
-  mkdir -p "$toplevel/.claude/worktrees"
-  if ! git -C "$toplevel" check-ignore -q .claude/worktrees 2>/dev/null; then
-    echo "armory: warning: .claude/worktrees is not gitignored in $toplevel (add it — see WORKTREES.md)" >&2
+  local wt_path=""
+  if ! materialize_repo_worktree "$toplevel" "$name" "$ref" wt_path; then
+    exit 1
   fi
-
-  # Concurrency-safe creation: parallel fleet launches race on git's
-  # index/worktree locks; retry with jitter, and treat an existing valid
-  # worktree as success (idempotent relaunch).
-  local attempt max_attempts=6 add_err=""
-  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if [[ -f "$wt_path/.git" ]] && git -C "$wt_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      echo "▶ worktree: $wt_path (reusing existing)" >&2
-      break
-    fi
-    if git -C "$toplevel" show-ref --verify --quiet "refs/heads/$name"; then
-      if add_err=$(git -C "$toplevel" worktree add "$wt_path" "$name" 2>&1); then
-        echo "▶ worktree: $wt_path (existing branch $name)" >&2
-        break
-      fi
-    else
-      if add_err=$(git -C "$toplevel" worktree add -b "$name" "$wt_path" ${ref:+"$ref"} 2>&1); then
-        echo "▶ worktree: $wt_path (new branch $name${ref:+ from $ref})" >&2
-        break
-      fi
-    fi
-    if (( attempt == max_attempts )); then
-      echo "armory: failed to create worktree $wt_path after $max_attempts attempts:" >&2
-      echo "$add_err" >&2
-      exit 1
-    fi
-    sleep "0.$(( (RANDOM % 5) + 2 ))"
-  done
 
   # Rebuild args: drop worktree flags and any caller --cwd, then point the
   # child at the worktree.
@@ -699,6 +743,490 @@ pick_loadout() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Fleet verbs: multi-child launch / status / report
+# ---------------------------------------------------------------------------
+# Test-only override for the per-child command (documented for tests). When
+# set, fleet runs `bash -c "$LLM_FLEET_CHILD_CMD"` inside the worktree instead
+# of re-invoking armory. Never set in production loadouts.
+#   LLM_FLEET_CHILD_CMD
+
+# Commits ahead of a reasonable base (upstream, then main/master/origin/*).
+fleet_commit_count() {
+  local wt=$1 n=""
+  n=$(git -C "$wt" rev-list --count '@{u}..HEAD' 2>/dev/null) && { printf '%s\n' "$n"; return 0; }
+  n=$(git -C "$wt" rev-list --count 'main..HEAD' 2>/dev/null) && { printf '%s\n' "$n"; return 0; }
+  n=$(git -C "$wt" rev-list --count 'master..HEAD' 2>/dev/null) && { printf '%s\n' "$n"; return 0; }
+  n=$(git -C "$wt" rev-list --count 'origin/main..HEAD' 2>/dev/null) && { printf '%s\n' "$n"; return 0; }
+  n=$(git -C "$wt" rev-list --count 'origin/master..HEAD' 2>/dev/null) && { printf '%s\n' "$n"; return 0; }
+  printf '0\n'
+}
+
+# Resolve fleet --cwd to a git toplevel (or exit).
+fleet_resolve_repo() {
+  local cwd=${1:-$PWD} toplevel
+  if ! toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
+    echo "armory: fleet: '$cwd' is not a git repo" >&2
+    exit 1
+  fi
+  printf '%s\n' "$toplevel"
+}
+
+# List fleet child worktree dirs that have a .child-out.log (sorted by name).
+fleet_child_worktrees() {
+  local repo=$1 base="$1/.claude/worktrees" d
+  [[ -d "$base" ]] || return 0
+  for d in "$base"/*; do
+    [[ -d "$d" ]] || continue
+    [[ -f "$d/.child-out.log" ]] || continue
+    printf '%s\n' "$d"
+  done | sort
+}
+
+# Spawn one fleet child detached. Records .child-pid / .child-exit / .child-out.log.
+# Uses LLM_FLEET_CHILD_CMD when set (test-only); else re-invokes this binary.
+fleet_spawn_child() {
+  local wt=$1 loadout=$2 prompt_file=$3
+  local self armory_bin
+  self="$(readlink -f "${BASH_SOURCE[0]}")"
+  armory_bin=${LLM_FLEET_ARMORY_BIN:-$self}
+
+  # Prompt is staged into the worktree so the wrapper needs no shell-escaping.
+  cp "$prompt_file" "$wt/.child-prompt"
+
+  # Launch script lives in the worktree; runs under setsid/nohup.
+  cat >"$wt/.child-launch.sh" <<'EOS'
+#!/usr/bin/env bash
+# Generated by armory fleet — do not edit while the child is running.
+set +e
+WT="$(cd "$(dirname "$0")" && pwd)"
+echo $$ >"$WT/.child-pid"
+if [[ -n "${LLM_FLEET_CHILD_CMD:-}" ]]; then
+  (cd "$WT" && eval "$LLM_FLEET_CHILD_CMD") >"$WT/.child-out.log" 2>&1
+  ec=$?
+else
+  PROMPT=$(cat "$WT/.child-prompt")
+  "$ARMORY_BIN" "$LOADOUT" --cwd "$WT" -p "$PROMPT" >"$WT/.child-out.log" 2>&1
+  ec=$?
+fi
+echo "$ec" >"$WT/.child-exit"
+EOS
+  chmod +x "$wt/.child-launch.sh"
+
+  # Detach fully so the fleet launcher can exit while children continue.
+  # Track the wrapper pid in the main shell via $! after backgrounding.
+  (
+    export ARMORY_BIN="$armory_bin" LOADOUT="$loadout"
+    # Preserve test-only child override across setsid/nohup.
+    [[ -n "${LLM_FLEET_CHILD_CMD:-}" ]] && export LLM_FLEET_CHILD_CMD
+    if command -v setsid >/dev/null 2>&1; then
+      exec setsid bash "$wt/.child-launch.sh"
+    else
+      exec nohup bash "$wt/.child-launch.sh"
+    fi
+  ) >/dev/null 2>&1 &
+  # Brief wait for .child-pid so max-parallel accounting is accurate.
+  local _i
+  for ((_i = 0; _i < 50; _i++)); do
+    [[ -f "$wt/.child-pid" ]] && break
+    sleep 0.05
+  done
+}
+
+# Count currently-running fleet children among named worktrees (alive pid, no exit).
+fleet_count_running() {
+  local repo=$1; shift
+  local name wt pid count=0
+  for name in "$@"; do
+    wt="$repo/.claude/worktrees/$name"
+    [[ -f "$wt/.child-pid" && ! -f "$wt/.child-exit" ]] || continue
+    pid=$(tr -d '[:space:]' <"$wt/.child-pid" 2>/dev/null || true)
+    [[ -n "$pid" ]] || continue
+    if kill -0 "$pid" 2>/dev/null; then
+      count=$((count + 1))
+    fi
+  done
+  printf '%s\n' "$count"
+}
+
+# Wait until fewer than max_parallel of the named children are running.
+fleet_wait_slot() {
+  local repo=$1 max=$2; shift 2
+  local n
+  while true; do
+    n=$(fleet_count_running "$repo" "$@")
+    (( n < max )) && return 0
+    sleep 0.2
+  done
+}
+
+cmd_fleet() {
+  local loadout="" manifest="" repo_cwd=$PWD
+  local max_parallel=10 stagger=3 worktree_ref="" dry_run=0
+  local -a seeds=()
+  local arg
+
+  # First positional is loadout when not a flag.
+  if [[ $# -lt 1 ]]; then
+    echo "armory: fleet requires <loadout> --manifest FILE" >&2
+    usage
+    exit 1
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    arg=$1
+    case "$arg" in
+      --manifest)
+        [[ $# -ge 2 ]] || { echo "armory: --manifest requires a file" >&2; exit 1; }
+        manifest=$2; shift 2 ;;
+      --manifest=*)
+        manifest=${arg#--manifest=}; shift ;;
+      --cwd)
+        [[ $# -ge 2 ]] || { echo "armory: --cwd requires a path" >&2; exit 1; }
+        repo_cwd=$2; shift 2 ;;
+      --cwd=*)
+        repo_cwd=${arg#--cwd=}; shift ;;
+      --max-parallel)
+        [[ $# -ge 2 ]] || { echo "armory: --max-parallel requires N" >&2; exit 1; }
+        max_parallel=$2; shift 2 ;;
+      --max-parallel=*)
+        max_parallel=${arg#--max-parallel=}; shift ;;
+      --stagger)
+        [[ $# -ge 2 ]] || { echo "armory: --stagger requires SECS" >&2; exit 1; }
+        stagger=$2; shift 2 ;;
+      --stagger=*)
+        stagger=${arg#--stagger=}; shift ;;
+      --worktree-ref)
+        [[ $# -ge 2 ]] || { echo "armory: --worktree-ref requires REF" >&2; exit 1; }
+        worktree_ref=$2; shift 2 ;;
+      --worktree-ref=*)
+        worktree_ref=${arg#--worktree-ref=}; shift ;;
+      --seed)
+        [[ $# -ge 2 ]] || { echo "armory: --seed requires a file" >&2; exit 1; }
+        seeds+=("$2"); shift 2 ;;
+      --seed=*)
+        seeds+=("${arg#--seed=}"); shift ;;
+      --dry-run)
+        dry_run=1; shift ;;
+      -h|--help)
+        usage; exit 0 ;;
+      -*)
+        echo "armory: fleet: unknown option '$arg'" >&2
+        exit 1 ;;
+      *)
+        if [[ -z "$loadout" ]]; then
+          loadout=$arg; shift
+        else
+          echo "armory: fleet: unexpected argument '$arg'" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
+  [[ -n "$loadout" ]] || { echo "armory: fleet requires <loadout>" >&2; usage; exit 1; }
+  [[ -n "$manifest" ]] || { echo "armory: fleet requires --manifest FILE" >&2; exit 1; }
+  [[ -f "$manifest" ]] || { echo "armory: fleet: manifest not found: $manifest" >&2; exit 1; }
+  if ! [[ "$max_parallel" =~ ^[1-9][0-9]*$ ]]; then
+    echo "armory: --max-parallel must be a positive integer (got '$max_parallel')" >&2
+    exit 1
+  fi
+  if ! [[ "$stagger" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "armory: --stagger must be a non-negative number (got '$stagger')" >&2
+    exit 1
+  fi
+
+  # Validate loadout early (same voice as single-child path).
+  resolve "$loadout"
+  check_auth
+
+  local manifest_dir repo
+  manifest_dir=$(cd "$(dirname "$manifest")" && pwd)
+  manifest=$(cd "$(dirname "$manifest")" && printf '%s/%s\n' "$(pwd)" "$(basename "$manifest")")
+
+  local -a names=() prompt_files=()
+  local -A name_seen=()
+  local line name pfile raw lineno=0
+  local problems=0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lineno=$((lineno + 1))
+    # Strip CR; skip blanks and # comments (leading whitespace ok).
+    line=${line//$'\r'/}
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" != *"|"* ]]; then
+      echo "armory: fleet: manifest line $lineno: expected <name>|<prompt-file> (got: $line)" >&2
+      problems=1
+      continue
+    fi
+    name=${line%%|*}
+    pfile=${line#*|}
+    name=${name#"${name%%[![:space:]]*}"}
+    name=${name%"${name##*[![:space:]]}"}
+    pfile=${pfile#"${pfile%%[![:space:]]*}"}
+    pfile=${pfile%"${pfile##*[![:space:]]}"}
+    if [[ -z "$name" || -z "$pfile" ]]; then
+      echo "armory: fleet: manifest line $lineno: empty name or prompt-file" >&2
+      problems=1
+      continue
+    fi
+    if ! is_safe_worktree_name "$name"; then
+      echo "armory: fleet: unsafe child name '$name' (allowed: alnum . _ -; must start alnum)" >&2
+      problems=1
+      continue
+    fi
+    if [[ -n "${name_seen[$name]:-}" ]]; then
+      echo "armory: fleet: duplicate child name '$name' (first at line ${name_seen[$name]})" >&2
+      problems=1
+      continue
+    fi
+    name_seen[$name]=$lineno
+    # Prompt paths resolve relative to the manifest's directory.
+    if [[ "$pfile" != /* ]]; then
+      pfile="$manifest_dir/$pfile"
+    fi
+    names+=("$name")
+    prompt_files+=("$pfile")
+  done <"$manifest"
+
+  if (( ${#names[@]} == 0 )); then
+    echo "armory: fleet: manifest has no children: $manifest" >&2
+    exit 1
+  fi
+
+  if (( dry_run )); then
+    local i preview
+    for i in "${!names[@]}"; do
+      name=${names[$i]}
+      pfile=${prompt_files[$i]}
+      if [[ -f "$pfile" ]]; then
+        preview=$(head -c 80 "$pfile" 2>/dev/null | tr '\n' ' ')
+      else
+        preview="(missing prompt file)"
+      fi
+      printf 'dry-run: %s | worktree=%s/.claude/worktrees/%s | loadout=%s | prompt=%s | %s\n' \
+        "$name" "${repo_cwd}" "$name" "$loadout" "$pfile" "$preview"
+    done
+    exit 0
+  fi
+
+  repo=$(fleet_resolve_repo "$repo_cwd")
+
+  # Validate seeds exist before any git work.
+  local seed
+  for seed in "${seeds[@]+"${seeds[@]}"}"; do
+    if [[ ! -f "$seed" ]]; then
+      echo "armory: fleet: --seed not found: $seed" >&2
+      exit 1
+    fi
+  done
+
+  local -a launched=() skipped=()
+  local -a summary_names=() summary_status=()
+  local i wt_path status
+  local first_launch=1
+
+  for i in "${!names[@]}"; do
+    name=${names[$i]}
+    pfile=${prompt_files[$i]}
+    wt_path="$repo/.claude/worktrees/$name"
+
+    if [[ ! -f "$pfile" ]]; then
+      echo "armory: fleet: SKIP $name — prompt file missing: $pfile" >&2
+      summary_names+=("$name")
+      summary_status+=("skip:missing-prompt")
+      skipped+=("$name")
+      problems=1
+      continue
+    fi
+
+    if [[ -e "$wt_path" ]]; then
+      echo "armory: fleet: REFUSE $name — worktree already exists: $wt_path" >&2
+      summary_names+=("$name")
+      summary_status+=("refuse:worktree-exists")
+      skipped+=("$name")
+      problems=1
+      continue
+    fi
+
+    # Slot gate: only count children we have already launched (main-shell
+    # tracking — never `echo | while` + wait, which loses children in a subshell).
+    if (( ${#launched[@]} > 0 )); then
+      fleet_wait_slot "$repo" "$max_parallel" "${launched[@]}"
+    fi
+
+    if (( ! first_launch )) && [[ "$stagger" != "0" && "$stagger" != "0.0" ]]; then
+      sleep "$stagger"
+    fi
+    first_launch=0
+
+    if ! materialize_repo_worktree "$repo" "$name" "$worktree_ref" wt_path; then
+      echo "armory: fleet: FAIL $name — could not create worktree" >&2
+      summary_names+=("$name")
+      summary_status+=("fail:worktree")
+      skipped+=("$name")
+      problems=1
+      continue
+    fi
+
+    for seed in "${seeds[@]+"${seeds[@]}"}"; do
+      cp "$seed" "$wt_path/$(basename "$seed")"
+    done
+
+    fleet_spawn_child "$wt_path" "$loadout" "$pfile"
+    launched+=("$name")
+    summary_names+=("$name")
+    summary_status+=("launched")
+    echo "▶ fleet: launched $name → $wt_path" >&2
+  done
+
+  # One-line-per-child summary (launch outcome only; success is fleet-report).
+  local j
+  echo "---- fleet launch summary ----" >&2
+  for j in "${!summary_names[@]}"; do
+    printf '%s | %s\n' "${summary_names[$j]}" "${summary_status[$j]}"
+  done
+  printf 'fleet: %d launched · %d skipped/refused of %d\n' \
+    "${#launched[@]}" "${#skipped[@]}" "${#summary_names[@]}"
+
+  if (( problems )); then
+    exit 1
+  fi
+  exit 0
+}
+
+cmd_fleet_status() {
+  local repo_cwd=$PWD arg
+  while [[ $# -gt 0 ]]; do
+    arg=$1
+    case "$arg" in
+      --cwd)
+        [[ $# -ge 2 ]] || { echo "armory: --cwd requires a path" >&2; exit 0; }
+        repo_cwd=$2; shift 2 ;;
+      --cwd=*)
+        repo_cwd=${arg#--cwd=}; shift ;;
+      -h|--help)
+        usage; exit 0 ;;
+      *)
+        echo "armory: fleet-status: unknown argument '$arg'" >&2
+        exit 0 ;;
+    esac
+  done
+
+  # Dashboard: always exit 0 (even if cwd is not a git repo).
+  local repo
+  if ! repo=$(git -C "$repo_cwd" rev-parse --show-toplevel 2>/dev/null); then
+    echo "armory: fleet-status: '$repo_cwd' is not a git repo" >&2
+    exit 0
+  fi
+
+  local wt name pid status commits progress
+  local any=0
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    any=1
+    name=$(basename "$wt")
+    if [[ -f "$wt/.child-exit" ]]; then
+      status="exit=$(tr -d '[:space:]' <"$wt/.child-exit")"
+    elif [[ -f "$wt/.child-pid" ]]; then
+      pid=$(tr -d '[:space:]' <"$wt/.child-pid")
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        status="running(pid $pid)"
+      else
+        status="stalled?"
+      fi
+    else
+      status="unknown"
+    fi
+    commits=$(fleet_commit_count "$wt")
+    progress=""
+    if [[ -f "$wt/PROGRESS.md" ]]; then
+      progress=$(tail -n 1 "$wt/PROGRESS.md" 2>/dev/null || true)
+    fi
+    if [[ -n "$progress" ]]; then
+      printf '%s | %s | commits=%s | %s\n' "$name" "$status" "$commits" "$progress"
+    else
+      printf '%s | %s | commits=%s\n' "$name" "$status" "$commits"
+    fi
+  done < <(fleet_child_worktrees "$repo")
+
+  if (( ! any )); then
+    echo "armory: fleet-status: no fleet children under $repo/.claude/worktrees" >&2
+  fi
+  exit 0
+}
+
+cmd_fleet_report() {
+  local repo_cwd=$PWD arg
+  while [[ $# -gt 0 ]]; do
+    arg=$1
+    case "$arg" in
+      --cwd)
+        [[ $# -ge 2 ]] || { echo "armory: --cwd requires a path" >&2; exit 1; }
+        repo_cwd=$2; shift 2 ;;
+      --cwd=*)
+        repo_cwd=${arg#--cwd=}; shift ;;
+      -h|--help)
+        usage; exit 0 ;;
+      *)
+        echo "armory: fleet-report: unknown argument '$arg'" >&2
+        exit 1 ;;
+    esac
+  done
+
+  local repo
+  repo=$(fleet_resolve_repo "$repo_cwd")
+
+  local wt name ec commits result_line bad=0 ok=0 total=0
+  local any=0
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    any=1
+    total=$((total + 1))
+    name=$(basename "$wt")
+    if [[ -f "$wt/.child-exit" ]]; then
+      ec=$(tr -d '[:space:]' <"$wt/.child-exit")
+    else
+      ec="?"
+    fi
+    commits=$(fleet_commit_count "$wt")
+    result_line=$(grep -E '^RESULT:' "$wt/.child-out.log" 2>/dev/null | tail -n 1 || true)
+    if [[ -z "$result_line" ]]; then
+      result_line="RESULT: (missing)"
+    fi
+    printf '%s | exit=%s | commits=%s | %s\n' "$name" "$ec" "$commits" "$result_line"
+
+    # Bad: nonzero exit, missing RESULT, or RESULT: failed
+    local is_bad=0
+    if [[ "$ec" != "0" ]]; then
+      is_bad=1
+    fi
+    if [[ "$result_line" == "RESULT: (missing)" ]]; then
+      is_bad=1
+    elif [[ "$result_line" =~ ^RESULT:[[:space:]]*failed ]]; then
+      is_bad=1
+    fi
+    if (( is_bad )); then
+      bad=$((bad + 1))
+    else
+      ok=$((ok + 1))
+    fi
+  done < <(fleet_child_worktrees "$repo")
+
+  if (( ! any )); then
+    echo "armory: fleet-report: no fleet children under $repo/.claude/worktrees" >&2
+    echo "fleet: 0 ok · 0 bad of 0"
+    exit 0
+  fi
+
+  printf 'fleet: %d ok · %d bad of %d\n' "$ok" "$bad" "$total"
+  if (( bad > 0 )); then
+    exit 1
+  fi
+  exit 0
+}
+
 # Whole-armory health. Exit 0 healthy / 1 problems. Kit checklist on stderr.
 cmd_doctor() {
   local f name problems=0 sf state
@@ -831,6 +1359,18 @@ case "${1:-}" in
     ;;
   doctor)
     cmd_doctor
+    ;;
+  fleet)
+    shift
+    cmd_fleet "$@"
+    ;;
+  fleet-status)
+    shift
+    cmd_fleet_status "$@"
+    ;;
+  fleet-report)
+    shift
+    cmd_fleet_report "$@"
     ;;
   --dry-run)
     [[ $# -ge 2 ]] || { usage; exit 1; }
