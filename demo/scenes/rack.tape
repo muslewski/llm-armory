@@ -3,9 +3,9 @@ Output build/demo-rack.txt
 Set Width 1200
 Set Height 640
 # Slightly tighter chrome so the 4-column arsenal rack fits without wrapping.
+# Real pty cols ≈143 at FontSize 12 / Padding 12 — do not force COLUMNS above that.
 Set FontSize 12
 Set Padding 12
-Env COLUMNS "140"
 Hide
 Type `export GREEN_UI=/home/kento/.local/lib/green-ui.sh`
 Enter
@@ -18,10 +18,6 @@ Enter
 Type `unset LLM_GROK GROK_EFFORT GROK_MODEL LLM_PRESET LLM_SYSTEM_APPEND`
 Enter
 Type `export PS1='$ '`
-Enter
-Type `stty cols 140 rows 40 2>/dev/null || true`
-Enter
-Type `export COLUMNS=140`
 Enter
 Type `clear`
 Enter

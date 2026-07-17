@@ -2,7 +2,11 @@ Output ../assets/demo-mission.gif
 Output build/demo-mission.txt
 Set Width 1000
 Set Height 500
-Env COLUMNS "120"
+# Real pty cols ≈103 at FontSize 14 / Padding 20 — enough for the dry-run
+# panel (~100 outer). Do NOT export COLUMNS/stty wider than the pty: the
+# card then draws past the viewport and wraps, breaking box borders.
+Set FontSize 14
+Set Padding 20
 Hide
 Type `export GREEN_UI=/home/kento/.local/lib/green-ui.sh`
 Enter
@@ -15,10 +19,6 @@ Enter
 Type `unset LLM_GROK GROK_EFFORT GROK_MODEL LLM_PRESET LLM_SYSTEM_APPEND`
 Enter
 Type `export PS1='$ '`
-Enter
-Type `stty cols 120 rows 40 2>/dev/null || true`
-Enter
-Type `export COLUMNS=120`
 Enter
 Type `clear`
 Enter
