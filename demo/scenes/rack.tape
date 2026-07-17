@@ -2,8 +2,8 @@ Output ../assets/demo-rack.gif
 Output build/demo-rack.txt
 Set Width 1200
 Set Height 640
-# Tighter chrome for the 4-column arsenal rack. JetBrainsMono @12 / pad 12
-# on Width 1200 yields enough real cols for ~84-char table rows.
+# Hero canvas. JetBrains Mono @ FontSize 12 ≈ ~8px/col → Width 1200 has
+# ample cols for the 4-column arsenal rack (~84-char table rows).
 # No forced COLUMNS/stty — match the real pty only.
 Set FontSize 12
 Set Padding 12
