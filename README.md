@@ -8,6 +8,13 @@
 
 <p align="center"><img src="./assets/demo-rack.gif" width="720" alt="armory --list arsenal rack demo"></p>
 
+<p align="center">
+  <a href="https://armory.muslewski.com"><img src="https://img.shields.io/badge/website-armory.muslewski.com-4a9fd4?style=flat-square&labelColor=0b1018" alt="Website"></a>
+</p>
+
+<p align="center"><b>Site:</b> <a href="https://armory.muslewski.com">armory.muslewski.com</a></p>
+
+
 # llm-armory
 
 **llm-armory** — choose the right executor for the job.
