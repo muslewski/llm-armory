@@ -12,6 +12,13 @@
   <a href="https://armory.muslewski.com"><img src="https://img.shields.io/badge/website-armory.muslewski.com-4a9fd4?style=flat-square&labelColor=0b1018" alt="Website"></a>
 </p>
 
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/llm-armory"><img src="https://img.shields.io/npm/v/llm-armory?style=flat-square" alt="npm"></a>
+  <a href="https://github.com/muslewski/llm-armory/discussions"><img src="https://img.shields.io/badge/discussions-join-4a9fd4?style=flat-square" alt="Discussions"></a>
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT">
+</p>
+
 <p align="center"><b>Site:</b> <a href="https://armory.muslewski.com">armory.muslewski.com</a></p>
 
 
@@ -185,3 +192,15 @@ convention (armory writes launch records; details in [`INTEROP.md`](INTEROP.md))
 ## Credits
 
 The `free` loadout runs against **[freellmapi](https://github.com/tashfeenahmed/freellmapi)** — a self-hosted free-tier LLM API aggregator by [tashfeenahmed](https://github.com/tashfeenahmed) (this project is not affiliated with it). Self-host runbook: [`freellmapi/NOTES.md`](freellmapi/NOTES.md).
+
+## Community
+
+- **Website:** [armory.muslewski.com](https://armory.muslewski.com)
+- **Questions & ideas:** [Discussions](https://github.com/muslewski/llm-armory/discussions)
+- **Bugs & features:** [Issues](https://github.com/muslewski/llm-armory/issues/new/choose)
+- **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md)
+- **Code of Conduct:** [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- **Security:** [SECURITY.md](./SECURITY.md) (private reports only)
+- **Support matrix:** [SUPPORT.md](./SUPPORT.md)
+
+If you're not sure whether something is a bug, **start a Discussion** — maintainers can promote it to an issue when it is.
