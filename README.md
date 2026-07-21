@@ -45,24 +45,25 @@ The launcher lives at `bin/llm`.
 <p><img src="./assets/demo-doctor.gif" width="600" alt="armory doctor demo"></p>
 </details>
 
-### Setup: make `armory` the command
+### Install
 
 ```bash
-# Symlink for the short, branded command
-mkdir -p ~/.local/bin
-ln -sfn ~/Repositories/llm-armory/bin/llm ~/.local/bin/armory
-
-# Ensure it's on PATH (add to your shell rc if needed)
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-After this you can run `armory` from anywhere.
-
-Verify:
-```bash
+npm install -g llm-armory    # or: npx llm-armory …
+# bins: armory | llm-armory | llm
 armory --list
-armory --help
+armory doctor
 ```
+
+From a git checkout (dev):
+
+```bash
+mkdir -p ~/.local/bin
+ln -sfn "$PWD/bin/llm" ~/.local/bin/armory
+export PATH="$HOME/.local/bin:$PATH"
+armory --list
+```
+
+Loadouts ship with the package (`presets/`). Override with `LLM_ARMORY_HOME` if you keep a custom arsenal.
 
 ## Loadouts in the armory
 

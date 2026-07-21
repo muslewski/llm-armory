@@ -9,8 +9,12 @@
 # silences when stderr is not a TTY (kit law).
 set -euo pipefail
 
-# Support both new name and legacy LLM_LAB_HOME for transition
-ARMORY_HOME="${LLM_ARMORY_HOME:-${LLM_LAB_HOME:-$HOME/Repositories/llm-armory}}"
+# Package root (npm global, npx, or git checkout). Symlink-safe.
+_ARMORY_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+# Support both new name and legacy LLM_LAB_HOME for transition.
+# Default: the install root (shipped presets), not a hard-coded checkout path.
+ARMORY_HOME="${LLM_ARMORY_HOME:-${LLM_LAB_HOME:-$_ARMORY_ROOT}}"
 PRESETS_DIR="$ARMORY_HOME/presets"
 export ARMORY_HOME
 export LLM_ARMORY_HOME="$ARMORY_HOME"  # for future
@@ -18,7 +22,6 @@ export LLM_LAB_HOME="$ARMORY_HOME"     # compat for old hooks
 export PRESETS_DIR   # preset files use it to source providers/*.env
 
 # GREEN-UI-KIT (or plain fallbacks). Path override: GREEN_UI=/path/to/green-ui.sh
-_ARMORY_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/ui.sh
 source "$_ARMORY_ROOT/lib/ui.sh"
 

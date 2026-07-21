@@ -1,0 +1,52 @@
+{
+  "name": "llm-armory",
+  "version": "0.1.0",
+  "description": "Choose the right executor for the job — named loadouts (grok-high, quality, …) for hybrid Claude advisor + Grok executor fleets.",
+  "bin": {
+    "armory": "bin/llm",
+    "llm-armory": "bin/llm",
+    "llm": "bin/llm"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "presets",
+    "hooks",
+    "skills",
+    "templates",
+    "scripts",
+    "AGENTS.md",
+    "INTEROP.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "!win32"
+  ],
+  "scripts": {
+    "test": "bash tests/run.sh"
+  },
+  "keywords": [
+    "claude-code",
+    "grok",
+    "agents",
+    "llm",
+    "executor",
+    "fleet",
+    "worktree",
+    "multi-agent",
+    "cli"
+  ],
+  "author": "Mateusz Muślewski <10kento10@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muslewski/llm-armory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/muslewski/llm-armory/issues"
+  },
+  "homepage": "https://armory.muslewski.com/"
+}
