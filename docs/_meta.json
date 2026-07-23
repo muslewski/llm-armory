@@ -1,0 +1,15 @@
+{
+  "title": "llm-armory",
+  "description": "Named executor loadouts for hybrid Claude advisor + Grok executor fleets",
+  "sidebar": [
+    { "title": "Home", "href": "index.md" },
+    { "title": "Getting started", "href": "getting-started.md" },
+    { "title": "Works with", "href": "works-with.md" },
+    {
+      "title": "Recipes",
+      "items": [
+        { "title": "Agent status at launch", "href": "recipes/agent-status.md" }
+      ]
+    }
+  ]
+}
