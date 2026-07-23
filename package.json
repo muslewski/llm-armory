@@ -1,6 +1,6 @@
 {
   "name": "llm-armory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Choose the right executor for the job — named loadouts (grok-high, quality, …) for hybrid Claude advisor + Grok executor fleets.",
   "bin": {
     "armory": "bin/llm",
